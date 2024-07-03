@@ -102,7 +102,7 @@ Typing in astropy.stats
 =======================
 
 The ``astropy.stats`` module is now fully typed. This is the first subpackage for
-which this the case.
+which this is the case.
 
 Full change log
 ===============
