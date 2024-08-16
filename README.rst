@@ -1,6 +1,7 @@
 |Astropy Logo|
 ----
 .. container::
+
     |Actions Status| |CircleCI Status| |Coverage Status| |PyPI Status| |Documentation Status| |Pre-Commit| |Ruff| |Zenodo|
 ----
 |User Stats|
