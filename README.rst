@@ -1,4 +1,6 @@
-|Astropy Logo|
+.. raw:: html
+
+   <img src="https://github.com/astropy/repo_stats/blob/main/dashboard_template/astropy_banner_light.svg" align="right" width="300px" alt="right-aligned logo in README">
 
 |User Stats|
 
@@ -71,13 +73,6 @@ License
 
 Astropy is licensed under a 3-clause BSD style license - see the
 `LICENSE.rst <LICENSE.rst>`_ file.
-
-
-.. |Astropy Logo| image:: https://github.com/astropy/repo_stats/blob/main/dashboard_template/astropy_banner_light.svg
-    :target: https://www.astropy.org/
-    :alt: Astropy
-    :width: 70%
-    :align: "right"
 
 .. |User Stats| image:: https://github.com/astropy/repo_stats/blob/cache/cache/astropy_user_stats_dark.png
     :target: https://docs.astropy.org/en/latest/impact_health.html
