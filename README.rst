@@ -1,6 +1,6 @@
 |Astropy Logo|
 |User Stats|
-----
+=====
 
 .. container::
 
