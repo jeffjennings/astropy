@@ -3,7 +3,6 @@
 |User Stats|
 ----
 .. container::
-
     |Actions Status| |CircleCI Status| |Coverage Status| |PyPI Status| |Documentation Status| |Pre-Commit| |Ruff| |Zenodo|
 ----
 The Astropy Project is a community effort to develop a
