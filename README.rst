@@ -1,6 +1,6 @@
 .. raw:: html
 
-   <img src="https://github.com/astropy/repo_stats/blob/main/dashboard_template/astropy_banner_light.svg" align="middle" width="70%" alt="right-aligned logo in README">
+   <img src="https://github.com/astropy/repo_stats/blob/main/dashboard_template/astropy_banner_light.svg" margin-left="auto" margin-left="auto" width="70%" alt="right-aligned logo in README">
 
 |User Stats|
 
