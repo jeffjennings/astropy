@@ -631,3 +631,304 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
     representation_component_names = property(get_representation_component_names)
 
     representation_component_units = property(get_representation_component_units)
+
+
+    def _replicate(self, data, copy=False, **kwargs):
+        """Base for replicating a frame, with possibly different attributes.
+
+        Produces a new instance of the frame using the attributes of the old
+        frame (unless overridden) and with the data given.
+
+        Parameters
+        ----------
+        data : `~astropy.coordinates.BaseRepresentation` or None
+            Data to use in the new frame instance.  If `None`, it will be
+            a data-less frame.
+        copy : bool, optional
+            Whether data and the attributes on the old frame should be copied
+            (default), or passed on by reference.
+        **kwargs
+            Any attributes that should be overridden.
+        """
+        # This is to provide a slightly nicer error message if the user tries
+        # to use frame_obj.representation instead of frame_obj.data to get the
+        # underlying representation object [e.g., #2890]
+        if isinstance(data, type):
+            raise TypeError(
+                "Class passed as data instead of a representation instance. If you"
+                " called frame.representation, this returns the representation class."
+                " frame.data returns the instantiated object - you may want to  use"
+                " this instead."
+            )
+        if copy and data is not None:
+            data = data.copy()
+
+        for attr in self.frame_attributes:
+            if attr not in self._attr_names_with_defaults and attr not in kwargs:
+                value = getattr(self, attr)
+                kwargs[attr] = value.copy() if copy else value
+        return self.__class__(data, copy=False, **kwargs)
+
+    def replicate(self, copy=False, **kwargs):
+        """
+        Return a replica of the frame, optionally with new frame attributes.
+
+        The replica is a new frame object that has the same data as this frame
+        object and with frame attributes overridden if they are provided as extra
+        keyword arguments to this method. If ``copy`` is set to `True` then a
+        copy of the internal arrays will be made.  Otherwise the replica will
+        use a reference to the original arrays when possible to save memory. The
+        internal arrays are normally not changeable by the user so in most cases
+        it should not be necessary to set ``copy`` to `True`.
+
+        Parameters
+        ----------
+        copy : bool, optional
+            If True, the resulting object is a copy of the data.  When False,
+            references are used where  possible. This rule also applies to the
+            frame attributes.
+        **kwargs
+            Any additional keywords are treated as frame attributes to be set on the
+            new frame object.
+
+        Returns
+        -------
+        frameobj : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
+            Replica of this object, but possibly with new frame attributes.
+        """
+        return self._replicate(self.data, copy=copy, **kwargs)
+
+    def replicate_without_data(self, copy=False, **kwargs): # TODO JJ: deprecate
+        """
+        Return a replica without data, optionally with new frame attributes.
+
+        The replica is a new frame object without data but with the same frame
+        attributes as this object, except where overridden by extra keyword
+        arguments to this method.  The ``copy`` keyword determines if the frame
+        attributes are truly copied vs being references (which saves memory for
+        cases where frame attributes are large).
+
+        This method is essentially the converse of `realize_frame`.
+
+        Parameters
+        ----------
+        copy : bool, optional
+            If True, the resulting object has copies of the frame attributes.
+            When False, references are used where  possible.
+        **kwargs
+            Any additional keywords are treated as frame attributes to be set on the
+            new frame object.
+
+        Returns
+        -------
+        frameobj : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
+            Replica of this object, but without data and possibly with new frame
+            attributes.
+        """
+        return self._replicate(None, copy=copy, **kwargs)
+
+    def realize_frame(self, data, **kwargs):
+        """
+        Generates a new frame with new data from another frame (which may or
+        may not have data). Roughly speaking, the converse of
+        `replicate_without_data`.
+
+        Parameters
+        ----------
+        data : `~astropy.coordinates.BaseRepresentation`
+            The representation to use as the data for the new frame.
+        **kwargs
+            Any additional keywords are treated as frame attributes to be set on the
+            new frame object. In particular, `representation_type` can be specified.
+
+        Returns
+        -------
+        frameobj : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
+            A new object in *this* frame, with the same frame attributes as
+            this one, but with the ``data`` as the coordinate data.
+
+        """
+        return self._replicate(data, **kwargs)
+
+
+    def represent_as(self, base, s="base", in_frame_units=False):
+        """
+        Generate and return a new representation of this frame's `data`
+        as a Representation object.
+
+        Note: In order to make an in-place change of the representation
+        of a Frame or SkyCoord object, set the ``representation``
+        attribute of that object to the desired new representation, or
+        use the ``set_representation_cls`` method to also set the differential.
+
+        Parameters
+        ----------
+        base : subclass of BaseRepresentation or string
+            The type of representation to generate.  Must be a *class*
+            (not an instance), or the string name of the representation
+            class.
+        s : subclass of `~astropy.coordinates.BaseDifferential`, str, optional
+            Class in which any velocities should be represented. Must be
+            a *class* (not an instance), or the string name of the
+            differential class.  If equal to 'base' (default), inferred from
+            the base class.  If `None`, all velocity information is dropped.
+        in_frame_units : bool, keyword-only
+            Force the representation units to match the specified units
+            particular to this frame
+
+        Returns
+        -------
+        newrep : BaseRepresentation-derived object
+            A new representation object of this frame's `data`.
+
+        Raises
+        ------
+        AttributeError
+            If this object had no `data`
+
+        Examples
+        --------
+        >>> from astropy import units as u
+        >>> from astropy.coordinates import SkyCoord, CartesianRepresentation
+        >>> coord = SkyCoord(0*u.deg, 0*u.deg)
+        >>> coord.represent_as(CartesianRepresentation)  # doctest: +FLOAT_CMP
+        <CartesianRepresentation (x, y, z) [dimensionless]
+                (1., 0., 0.)>
+
+        >>> coord.representation_type = CartesianRepresentation
+        >>> coord  # doctest: +FLOAT_CMP
+        <SkyCoord (ICRS): (x, y, z) [dimensionless]
+            (1., 0., 0.)>
+        """
+        # In the future, we may want to support more differentials, in which
+        # case one probably needs to define **kwargs above and use it here.
+        # But for now, we only care about the velocity.
+        repr_classes = _get_repr_classes(base=base, s=s)
+        representation_cls = repr_classes["base"]
+        # We only keep velocity information
+        if "s" in self.data.differentials:
+            # For the default 'base' option in which _get_repr_classes has
+            # given us a best guess based on the representation class, we only
+            # use it if the class we had already is incompatible.
+            if s == "base" and (
+                self.data.differentials["s"].__class__
+                in representation_cls._compatible_differentials
+            ):
+                differential_cls = self.data.differentials["s"].__class__
+            else:
+                differential_cls = repr_classes["s"]
+        elif s is None or s == "base":
+            differential_cls = None
+        else:
+            raise TypeError(
+                "Frame data has no associated differentials (i.e. the frame has no"
+                " velocity data) - represent_as() only accepts a new representation."
+            )
+
+        if differential_cls:
+            cache_key = (
+                representation_cls.__name__,
+                differential_cls.__name__,
+                in_frame_units,
+            )
+        else:
+            cache_key = (representation_cls.__name__, in_frame_units)
+
+        if cached_repr := self.cache["representation"].get(cache_key):
+            return cached_repr
+
+        if differential_cls:
+            # Sanity check to ensure we do not just drop radial
+            # velocity.  TODO: should Representation.represent_as
+            # allow this transformation in the first place?
+            if (
+                isinstance(self.data, r.UnitSphericalRepresentation)
+                and issubclass(representation_cls, r.CartesianRepresentation)
+                and not isinstance(
+                    self.data.differentials["s"],
+                    (
+                        r.UnitSphericalDifferential,
+                        r.UnitSphericalCosLatDifferential,
+                        r.RadialDifferential,
+                    ),
+                )
+            ):
+                raise u.UnitConversionError(
+                    "need a distance to retrieve a cartesian representation "
+                    "when both radial velocity and proper motion are present, "
+                    "since otherwise the units cannot match."
+                )
+
+            # TODO NOTE: only supports a single differential
+            data = self.data.represent_as(representation_cls, differential_cls)
+            diff = data.differentials["s"]  # TODO: assumes velocity
+        else:
+            data = self.data.represent_as(representation_cls)
+
+        # If the new representation is known to this frame and has a defined
+        # set of names and units, then use that.
+        if in_frame_units and (
+            new_attrs := self.representation_info.get(representation_cls)
+        ):
+            datakwargs = {comp: getattr(data, comp) for comp in data.components}
+            for comp, new_attr_unit in zip(data.components, new_attrs["units"]):
+                if new_attr_unit:
+                    datakwargs[comp] = datakwargs[comp].to(new_attr_unit)
+            data = data.__class__(copy=False, **datakwargs)
+
+        if differential_cls:
+            # the original differential
+            data_diff = self.data.differentials["s"]
+
+            # If the new differential is known to this frame and has a
+            # defined set of names and units, then use that.
+            if in_frame_units and (
+                new_attrs := self.representation_info.get(differential_cls)
+            ):
+                diffkwargs = {comp: getattr(diff, comp) for comp in diff.components}
+                for comp, new_attr_unit in zip(diff.components, new_attrs["units"]):
+                    # Some special-casing to treat a situation where the
+                    # input data has a UnitSphericalDifferential or a
+                    # RadialDifferential. It is re-represented to the
+                    # frame's differential class (which might be, e.g., a
+                    # dimensional Differential), so we don't want to try to
+                    # convert the empty component units
+                    if (
+                        isinstance(
+                            data_diff,
+                            (
+                                r.UnitSphericalDifferential,
+                                r.UnitSphericalCosLatDifferential,
+                                r.RadialDifferential,
+                            ),
+                        )
+                        and comp not in data_diff.__class__.attr_classes
+                    ):
+                        continue
+
+                    # Try to convert to requested units. Since that might
+                    # not be possible (e.g., for a coordinate with proper
+                    # motion but without distance, one cannot convert to a
+                    # cartesian differential in km/s), we allow the unit
+                    # conversion to fail.  See gh-7028 for discussion.
+                    if new_attr_unit and hasattr(diff, comp):
+                        try:
+                            diffkwargs[comp] = diffkwargs[comp].to(new_attr_unit)
+                        except Exception:
+                            pass
+
+                diff = diff.__class__(copy=False, **diffkwargs)
+
+                # Here we have to bypass using with_differentials() because
+                # it has a validation check. But because
+                # .representation_type and .differential_type don't point to
+                # the original classes, if the input differential is a
+                # RadialDifferential, it usually gets turned into a
+                # SphericalCosLatDifferential (or whatever the default is)
+                # with strange units for the d_lon and d_lat attributes.
+                # This then causes the dictionary key check to fail (i.e.
+                # comparison against `diff._get_deriv_key()`)
+                data._differentials.update({"s": diff})
+
+        self.cache["representation"][cache_key] = data
+        return data
