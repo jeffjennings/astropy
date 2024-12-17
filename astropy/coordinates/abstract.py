@@ -1,5 +1,5 @@
 
-# TODO APE
+# TODO APE: update
 __all__ = ["AbstractCoordinate", "AbstractReferenceFrame", "_get_repr_cls", "_get_repr_classes"]
 
 import warnings
@@ -80,3 +80,96 @@ def _get_repr_classes(base, **differentials):
             )
         repr_classes[name] = differential_type
     return repr_classes
+
+class AbstractCoordinate(MaskableShapedLikeNDArray):
+    # TODO APE: docstring 
+
+    default_representation = None
+    default_differential = None
+
+    # Specifies special names and units for representation and differential
+    # attributes.
+    frame_specific_representation_info = {}
+
+    def __init_subclass__(cls, **kwargs):
+        # We first check for explicitly set values for these:
+        default_repr = getattr(cls, "default_representation", None)
+        default_diff = getattr(cls, "default_differential", None)
+        repr_info = getattr(cls, "frame_specific_representation_info", None)
+        # Then, to make sure this works for subclasses-of-subclasses, we also
+        # have to check for cases where the attribute names have already been
+        # replaced by underscore-prefaced equivalents by the logic below:
+        if default_repr is None or isinstance(default_repr, property):
+            default_repr = getattr(cls, "_default_representation", None)
+
+        if default_diff is None or isinstance(default_diff, property):
+            default_diff = getattr(cls, "_default_differential", None)
+
+        if repr_info is None or isinstance(repr_info, property):
+            repr_info = getattr(cls, "_frame_specific_representation_info", None)
+
+        repr_info = cls._infer_repr_info(repr_info)
+
+        # Make read-only properties for the frame class attributes that should
+        # be read-only to make them immutable after creation.
+        # We copy attributes instead of linking to make sure there's no
+        # accidental cross-talk between classes
+        cls._create_readonly_property(
+            "default_representation",
+            default_repr,
+            "Default representation for position data",
+        )
+        cls._create_readonly_property(
+            "default_differential",
+            default_diff,
+            "Default representation for differential data (e.g., velocity)",
+        )
+        cls._create_readonly_property(
+            "frame_specific_representation_info",
+            copy.deepcopy(repr_info),
+            "Mapping for frame-specific component names",
+        )
+
+        # TODO APE: keep?
+        cls._frame_class_cache = {} 
+
+
+    # TODO APE: update args?
+    def __init__(
+        self,
+        *args,
+        copy=True,
+        representation_type=None,
+        differential_type=None,
+        **kwargs,
+    ):
+
+        self._representation = self._infer_representation(
+            representation_type, differential_type
+        )
+        # TODO APE: can we simplify this?
+        data = self._infer_data(args, copy, kwargs)  # possibly None. 
+
+        if copy:
+            data = data.copy()
+        self._data = data
+
+        # The logic of this block is not related to the previous one
+        if self.has_data:
+            # This makes the cache keys backwards-compatible, but also adds
+            # support for having differentials attached to the frame data
+            # representation object.
+            if "s" in self._data.differentials:
+                # TODO: assumes a velocity unit differential
+                key = (
+                    self._data.__class__.__name__,
+                    self._data.differentials["s"].__class__.__name__,
+                    False,
+                )
+            else:
+                key = (self._data.__class__.__name__, False)
+
+            # Set up representation cache.
+            self.cache["representation"][key] = self._data
+
+
