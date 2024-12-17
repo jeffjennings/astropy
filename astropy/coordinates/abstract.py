@@ -10,6 +10,7 @@ import numpy as np
 
 from astropy import units as u
 from astropy.utils.decorators import lazyproperty
+from astropy.utils import ShapedLikeNDArray
 
 from . import representation as r
 from .angles import Angle, position_angle
@@ -26,6 +27,9 @@ if TYPE_CHECKING:
     from astropy.coordinates import BaseCoordinateFrame, Latitude, Longitude, SkyCoord
     from astropy.units import Unit
 
+# the graph used for all transformations between frames
+# TODO APE: add here? (also in baseframe)
+frame_transform_graph = TransformGraph() 
 
 def _get_repr_cls(value):
     """
@@ -698,7 +702,8 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
         """
         return self._replicate(self.data, copy=copy, **kwargs)
 
-    def replicate_without_data(self, copy=False, **kwargs): # TODO JJ: deprecate
+    # TODO APE: deprecate
+    def replicate_without_data(self, copy=False, **kwargs): 
         """
         Return a replica without data, optionally with new frame attributes.
 
@@ -932,3 +937,137 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
 
         self.cache["representation"][cache_key] = data
         return data
+ 
+    def _data_repr(self):
+        """Returns a string representation of the coordinate data."""
+        if not self.has_data:
+            return ""
+
+        if rep_cls := self.representation_type:
+            if isinstance(self.data, getattr(rep_cls, "_unit_representation", ())):
+                rep_cls = self.data.__class__
+
+            dif_cls = None
+            if "s" in self.data.differentials:
+                dif_cls = self.get_representation_cls("s")
+                if isinstance(
+                    dif_data := self.data.differentials["s"],
+                    (
+                        r.UnitSphericalDifferential,
+                        r.UnitSphericalCosLatDifferential,
+                        r.RadialDifferential,
+                    ),
+                ):
+                    dif_cls = dif_data.__class__
+
+            data = self.represent_as(rep_cls, dif_cls, in_frame_units=True)
+
+            data_repr = repr(data)
+            # Generate the list of component names out of the repr string
+            part1, _, remainder = data_repr.partition("(")
+            if remainder:
+                comp_str, part2 = remainder.split(")", 1)
+                # Swap in frame-specific component names
+                invnames = {
+                    nmrepr: nmpref
+                    for nmpref, nmrepr in self.representation_component_names.items()
+                }
+                comp_names = (invnames.get(name, name) for name in comp_str.split(", "))
+                # Reassemble the repr string
+                data_repr = f"{part1}({', '.join(comp_names)}){part2}"
+
+        else:
+            data = self.data
+            data_repr = repr(self.data)
+
+        if data_repr.startswith(class_prefix := f"<{type(data).__name__} "):
+            data_repr = data_repr.removeprefix(class_prefix).removesuffix(">")
+        else:
+            data_repr = "Data:\n" + data_repr
+
+        if "s" not in self.data.differentials:
+            return data_repr
+
+        data_repr_spl = data_repr.split("\n")
+        first, *middle, last = repr(data.differentials["s"]).split("\n")
+        if first.startswith("<"):
+            first = " " + first.split(" ", 1)[1]
+        for frm_nm, rep_nm in self.get_representation_component_names("s").items():
+            first = first.replace(rep_nm, frm_nm)
+        data_repr_spl[-1] = "\n".join((first, *middle, last.removesuffix(">")))
+        return "\n".join(data_repr_spl)
+
+    # TODO APE: revisit and potentially refactor
+    def _apply(self, method, *args, **kwargs): 
+        """Create a new instance, applying a method to the underlying data.
+
+        In typical usage, the method is any of the shape-changing methods for
+        `~numpy.ndarray` (``reshape``, ``swapaxes``, etc.), as well as those
+        picking particular elements (``__getitem__``, ``take``, etc.), which
+        are all defined in `~astropy.utils.shapes.ShapedLikeNDArray`. It will be
+        applied to the underlying arrays in the representation (e.g., ``x``,
+        ``y``, and ``z`` for `~astropy.coordinates.CartesianRepresentation`),
+        as well as to any frame attributes that have a shape, with the results
+        used to create a new instance.
+
+        Internally, it is also used to apply functions to the above parts
+        (in particular, `~numpy.broadcast_to`).
+
+        Parameters
+        ----------
+        method : str or callable
+            If str, it is the name of a method that is applied to the internal
+            ``components``. If callable, the function is applied.
+        *args : tuple
+            Any positional arguments for ``method``.
+        **kwargs : dict
+            Any keyword arguments for ``method``.
+        """
+
+        def apply_method(value):
+            if isinstance(value, ShapedLikeNDArray):
+                return value._apply(method, *args, **kwargs)
+            else:
+                if callable(method):
+                    return method(value, *args, **kwargs)
+                else:
+                    return getattr(value, method)(*args, **kwargs)
+
+        new = super().__new__(self.__class__)
+        if hasattr(self, "_representation"):
+            new._representation = self._representation.copy()
+        new._attr_names_with_defaults = self._attr_names_with_defaults.copy()
+
+        new_shape = ()
+        for attr in self.frame_attributes:
+            _attr = "_" + attr
+            if attr in self._attr_names_with_defaults:
+                setattr(new, _attr, getattr(self, _attr))
+            else:
+                value = getattr(self, _attr)
+                if getattr(value, "shape", ()):
+                    value = apply_method(value)
+                    new_shape = new_shape or value.shape
+                elif method == "copy" or method == "flatten":
+                    # flatten should copy also for a single element array, but
+                    # we cannot use it directly for array scalars, since it
+                    # always returns a one-dimensional array. So, just copy.
+                    value = copy.copy(value)
+
+                setattr(new, _attr, value)
+
+        if self.has_data:
+            new._data = apply_method(self.data)
+            new_shape = new_shape or new._data.shape
+        else:
+            new._data = None
+
+        new._shape = new_shape
+
+        # Copy other 'info' attr only if it has actually been defined.
+        # See PR #3898 for further explanation and justification, along
+        # with Quantity.__array_finalize__
+        if "info" in self.__dict__:
+            new.info = self.info
+
+        return new
