@@ -1141,3 +1141,163 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
 
         super().__setattr__(attr, value)
 
+    def _prepare_unit_sphere_coords(
+        self, 
+        other: BaseCoordinateFrame | SkyCoord,
+        origin_mismatch: Literal["ignore", "warn", "error"],
+    ) -> tuple[Longitude, Latitude, Longitude, Latitude]:
+        other_frame = getattr(other, "frame", other)
+        if not (
+            origin_mismatch == "ignore"
+            or self.is_equivalent_frame(other_frame)
+            or all(
+                isinstance(comp, (StaticMatrixTransform, DynamicMatrixTransform))
+                for comp in frame_transform_graph.get_transform(
+                    type(self), type(other_frame)
+                ).transforms
+            )
+        ):
+            if origin_mismatch == "warn":
+                warnings.warn(NonRotationTransformationWarning(self, other_frame))
+            elif origin_mismatch == "error":
+                raise NonRotationTransformationError(self, other_frame)
+            else:
+                raise ValueError(
+                    f"{origin_mismatch=} is invalid. Allowed values are 'ignore', "
+                    "'warn' or 'error'."
+                )
+        self_sph = self.represent_as(r.UnitSphericalRepresentation)
+        other_sph = other_frame.transform_to(self).represent_as(
+            r.UnitSphericalRepresentation
+        )
+        return self_sph.lon, self_sph.lat, other_sph.lon, other_sph.lat
+
+    def position_angle(self, other: BaseCoordinateFrame | SkyCoord) -> Angle:
+        """Compute the on-sky position angle to another coordinate.
+
+        Parameters
+        ----------
+        other : `~astropy.coordinates.BaseCoordinateFrame` or `~astropy.coordinates.SkyCoord`
+            The other coordinate to compute the position angle to.  It is
+            treated as the "head" of the vector of the position angle.
+
+        Returns
+        -------
+        `~astropy.coordinates.Angle`
+            The (positive) position angle of the vector pointing from ``self``
+            to ``other``, measured East from North.  If either ``self`` or
+            ``other`` contain arrays, this will be an array following the
+            appropriate `numpy` broadcasting rules.
+
+        Examples
+        --------
+        >>> from astropy import units as u
+        >>> from astropy.coordinates import ICRS, SkyCoord
+        >>> c1 = SkyCoord(0*u.deg, 0*u.deg)
+        >>> c2 = ICRS(1*u.deg, 0*u.deg)
+        >>> c1.position_angle(c2).to(u.deg)
+        <Angle 90. deg>
+        >>> c2.position_angle(c1).to(u.deg)
+        <Angle 270. deg>
+        >>> c3 = SkyCoord(1*u.deg, 1*u.deg)
+        >>> c1.position_angle(c3).to(u.deg)  # doctest: +FLOAT_CMP
+        <Angle 44.995636455344844 deg>
+        """
+        return position_angle(*self._prepare_unit_sphere_coords(other, "ignore"))
+
+    def separation(
+        self,
+        other: BaseCoordinateFrame | SkyCoord,
+        *,
+        origin_mismatch: Literal["ignore", "warn", "error"] = "warn",
+    ) -> Angle:
+        """
+        Computes on-sky separation between this coordinate and another.
+
+        For more on how to use this (and related) functionality, see the
+        examples in :ref:`astropy-coordinates-separations-matching`.
+
+        Parameters
+        ----------
+        other : `~astropy.coordinates.BaseCoordinateFrame` or `~astropy.coordinates.SkyCoord`
+            The coordinate to get the separation to.
+        origin_mismatch : {"warn", "ignore", "error"}, keyword-only
+            If the ``other`` coordinates are in a different frame then they
+            will have to be transformed, and if the transformation is not a
+            pure rotation then ``self.separation(other)`` can be
+            different from ``other.separation(self)``. With
+            ``origin_mismatch="warn"`` (default) the transformation is
+            always performed, but a warning is emitted if it is not a
+            pure rotation. If ``origin_mismatch="ignore"`` then the
+            required transformation is always performed without warnings.
+            If ``origin_mismatch="error"`` then only transformations
+            that are pure rotations are allowed.
+
+        Returns
+        -------
+        sep : `~astropy.coordinates.Angle`
+            The on-sky separation between this and the ``other`` coordinate.
+
+        Notes
+        -----
+        The separation is calculated using the Vincenty formula, which
+        is stable at all locations, including poles and antipodes [1]_.
+
+        .. [1] https://en.wikipedia.org/wiki/Great-circle_distance
+
+        """
+        from .angles import Angle, angular_separation
+
+        return Angle(
+            angular_separation(
+                *self._prepare_unit_sphere_coords(other, origin_mismatch)
+            ),
+            unit=u.degree,
+        )
+
+    def separation_3d(self, other):
+        """
+        Computes three dimensional separation between this coordinate
+        and another.
+
+        For more on how to use this (and related) functionality, see the
+        examples in :ref:`astropy-coordinates-separations-matching`.
+
+        Parameters
+        ----------
+        other : `~astropy.coordinates.BaseCoordinateFrame` or `~astropy.coordinates.SkyCoord`
+            The coordinate system to get the distance to.
+
+        Returns
+        -------
+        sep : `~astropy.coordinates.Distance`
+            The real-space distance between these two coordinates.
+
+        Raises
+        ------
+        ValueError
+            If this or the other coordinate do not have distances.
+        """
+        from .distances import Distance
+
+        if isinstance(self.data, r.UnitSphericalRepresentation):
+            raise ValueError(
+                "This object does not have a distance; cannot compute 3d separation."
+            )
+
+        # do this first just in case the conversion somehow creates a distance
+        other = getattr(other, "frame", other).transform_to(self)
+
+        if isinstance(other, r.UnitSphericalRepresentation):
+            raise ValueError(
+                "The other object does not have a distance; "
+                "cannot compute 3d separation."
+            )
+
+        # drop the differentials to ensure they don't do anything odd in the
+        # subtraction
+        dist = (
+            self.data.without_differentials().represent_as(r.CartesianRepresentation)
+            - other.data.without_differentials().represent_as(r.CartesianRepresentation)
+        ).norm()
+        return dist if dist.unit == u.one else Distance(dist)
