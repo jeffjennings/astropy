@@ -362,3 +362,272 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
             )
 
         return representation_data
+
+
+    @classmethod
+    def _infer_repr_info(cls, repr_info):
+        # Unless overridden via `frame_specific_representation_info`, velocity
+        # name defaults are (see also docstring for BaseCoordinateFrame):
+        #   * ``pm_{lon}_cos{lat}``, ``pm_{lat}`` for
+        #     `SphericalCosLatDifferential` proper motion components
+        #   * ``pm_{lon}``, ``pm_{lat}`` for `SphericalDifferential` proper
+        #     motion components
+        #   * ``radial_velocity`` for any `d_distance` component
+        #   * ``v_{x,y,z}`` for `CartesianDifferential` velocity components
+        # where `{lon}` and `{lat}` are the frame names of the angular
+        # components.
+        if repr_info is None:
+            repr_info = {}
+
+        # the tuple() call below is necessary because if it is not there,
+        # the iteration proceeds in a difficult-to-predict manner in the
+        # case that one of the class objects hash is such that it gets
+        # revisited by the iteration.  The tuple() call prevents this by
+        # making the items iterated over fixed regardless of how the dict
+        # changes
+        for cls_or_name in tuple(repr_info.keys()):
+            if isinstance(cls_or_name, str):
+                # TODO: this provides a layer of backwards compatibility in
+                # case the key is a string, but now we want explicit classes.
+                repr_info[_get_repr_cls(cls_or_name)] = repr_info.pop(cls_or_name)
+
+        # The default spherical names are 'lon' and 'lat'
+        sph_repr = repr_info.setdefault(
+            r.SphericalRepresentation,
+            [RepresentationMapping("lon", "lon"), RepresentationMapping("lat", "lat")],
+        )
+
+        sph_component_map = {m.reprname: m.framename for m in sph_repr}
+        lon = sph_component_map["lon"]
+        lat = sph_component_map["lat"]
+
+        ang_v_unit = u.mas / u.yr
+        lin_v_unit = u.km / u.s
+
+        sph_coslat_diff = repr_info.setdefault(
+            r.SphericalCosLatDifferential,
+            [
+                RepresentationMapping("d_lon_coslat", f"pm_{lon}_cos{lat}", ang_v_unit),
+                RepresentationMapping("d_lat", f"pm_{lat}", ang_v_unit),
+                RepresentationMapping("d_distance", "radial_velocity", lin_v_unit),
+            ],
+        )
+        sph_diff = repr_info.setdefault(
+            r.SphericalDifferential,
+            [
+                RepresentationMapping("d_lon", f"pm_{lon}", ang_v_unit),
+                RepresentationMapping("d_lat", f"pm_{lat}", ang_v_unit),
+                RepresentationMapping("d_distance", "radial_velocity", lin_v_unit),
+            ],
+        )
+        repr_info.setdefault(
+            r.RadialDifferential,
+            [RepresentationMapping("d_distance", "radial_velocity", lin_v_unit)],
+        )
+        repr_info.setdefault(
+            r.CartesianDifferential,
+            [RepresentationMapping(f"d_{c}", f"v_{c}", lin_v_unit) for c in "xyz"],
+        )
+
+        # Unit* classes should follow the same naming conventions
+        # TODO: this adds some unnecessary mappings for the Unit classes, so
+        # this could be cleaned up, but in practice doesn't seem to have any
+        # negative side effects
+        repr_info.setdefault(r.UnitSphericalRepresentation, sph_repr)
+        repr_info.setdefault(r.UnitSphericalCosLatDifferential, sph_coslat_diff)
+        repr_info.setdefault(r.UnitSphericalDifferential, sph_diff)
+
+        return repr_info
+
+    @lazyproperty
+    def cache(self):
+        """Cache for this frame, a dict.
+
+        It stores anything that should be computed from the coordinate data (*not* from
+        the frame attributes). This can be used in functions to store anything that
+        might be expensive to compute but might be re-used by some other function.
+        E.g.::
+
+            if 'user_data' in myframe.cache:
+                data = myframe.cache['user_data']
+            else:
+                myframe.cache['user_data'] = data = expensive_func(myframe.lat)
+
+        If in-place modifications are made to the frame data, the cache should
+        be cleared::
+
+            myframe.cache.clear()
+
+        """
+        return defaultdict(dict)
+    
+    @property
+    def data(self):
+        """
+        The coordinate data for this object.  If this frame has no data, an
+        `ValueError` will be raised.  Use `has_data` to
+        check if data is present on this frame object.
+        """
+        if self._data is None:
+            raise ValueError(
+                f'The frame object "{self!r}" does not have associated data'
+            )
+        return self._data
+
+    @property
+    def has_data(self):
+        """
+        True if this frame has `data`, False otherwise.
+        """
+        return self._data is not None
+    
+    @property
+    def size(self):
+        return self.data.size
+
+    def __bool__(self):
+        return self.has_data and self.size > 0
+
+    @property
+    def shape(self):
+        return self._shape
+
+    def get_representation_cls(self, which="base"):
+        """The class used for part of this frame's data.
+
+        Parameters
+        ----------
+        which : ('base', 's', `None`)
+            The class of which part to return.  'base' means the class used to
+            represent the coordinates; 's' the first derivative to time, i.e.,
+            the class representing the proper motion and/or radial velocity.
+            If `None`, return a dict with both.
+
+        Returns
+        -------
+        representation : `~astropy.coordinates.BaseRepresentation` or `~astropy.coordinates.BaseDifferential`.
+        """
+        return self._representation if which is None else self._representation[which]
+
+    def set_representation_cls(self, base=None, s="base"):
+        """Set representation and/or differential class for this frame's data.
+
+        Parameters
+        ----------
+        base : str, `~astropy.coordinates.BaseRepresentation` subclass, optional
+            The name or subclass to use to represent the coordinate data.
+        s : `~astropy.coordinates.BaseDifferential` subclass, optional
+            The differential subclass to use to represent any velocities,
+            such as proper motion and radial velocity.  If equal to 'base',
+            which is the default, it will be inferred from the representation.
+            If `None`, the representation will drop any differentials.
+        """
+        if base is None:
+            base = self._representation["base"]
+        self._representation = _get_repr_classes(base=base, s=s)
+
+    representation_type = property(
+        fget=get_representation_cls,
+        fset=set_representation_cls,
+        doc="""The representation class used for this frame's data.
+
+        This will be a subclass from `~astropy.coordinates.BaseRepresentation`.
+        Can also be *set* using the string name of the representation. If you
+        wish to set an explicit differential class (rather than have it be
+        inferred), use the ``set_representation_cls`` method.
+        """,
+    )
+
+    @property
+    def differential_type(self):
+        """
+        The differential used for this frame's data.
+
+        This will be a subclass from `~astropy.coordinates.BaseDifferential`.
+        For simultaneous setting of representation and differentials, see the
+        ``set_representation_cls`` method.
+        """
+        return self.get_representation_cls("s")
+
+    @differential_type.setter
+    def differential_type(self, value):
+        self.set_representation_cls(s=value)
+
+    @classmethod
+    def _get_representation_info(cls):
+        # This exists as a class method only to support handling frame inputs
+        # without units, which are deprecated and will be removed.  This can be
+        # moved into the representation_info property at that time.
+        # note that if so moved, the cache should be acceessed as
+        # self.__class__._frame_class_cache
+
+        if (
+            cls._frame_class_cache.get("last_reprdiff_hash", None)
+            != r.get_reprdiff_cls_hash()
+        ):
+            repr_attrs = {}
+            for repr_diff_cls in list(r.REPRESENTATION_CLASSES.values()) + list(
+                r.DIFFERENTIAL_CLASSES.values()
+            ):
+                repr_attrs[repr_diff_cls] = {"names": [], "units": []}
+                for c, c_cls in repr_diff_cls.attr_classes.items():
+                    repr_attrs[repr_diff_cls]["names"].append(c)
+                    rec_unit = u.deg if issubclass(c_cls, Angle) else None
+                    repr_attrs[repr_diff_cls]["units"].append(rec_unit)
+
+            for (
+                repr_diff_cls,
+                mappings,
+            ) in cls._frame_specific_representation_info.items():
+                # take the 'names' and 'units' tuples from repr_attrs,
+                # and then use the RepresentationMapping objects
+                # to update as needed for this frame.
+                nms = repr_attrs[repr_diff_cls]["names"]
+                uns = repr_attrs[repr_diff_cls]["units"]
+                comptomap = {m.reprname: m for m in mappings}
+                for i, c in enumerate(repr_diff_cls.attr_classes.keys()):
+                    if (mapping := comptomap.get(c)) is not None:
+                        nms[i] = mapping.framename
+                        defaultunit = mapping.defaultunit
+
+                        # need the isinstance because otherwise if it's a unit it
+                        # will try to compare to the unit string representation
+                        if not (
+                            isinstance(defaultunit, str)
+                            and defaultunit == "recommended"
+                        ):
+                            uns[i] = defaultunit
+                            # else we just leave it as recommended_units says above
+
+                # Convert to tuples so that this can't mess with frame internals
+                repr_attrs[repr_diff_cls]["names"] = tuple(nms)
+                repr_attrs[repr_diff_cls]["units"] = tuple(uns)
+
+            cls._frame_class_cache["representation_info"] = repr_attrs
+            cls._frame_class_cache["last_reprdiff_hash"] = r.get_reprdiff_cls_hash()
+        return cls._frame_class_cache["representation_info"]
+
+    @lazyproperty
+    def representation_info(self):
+        """
+        A dictionary with the information of what attribute names for this frame
+        apply to particular representations.
+        """
+        return self._get_representation_info()
+
+    def get_representation_component_names(self, which="base"):
+        cls = self.get_representation_cls(which)
+        if cls is None:
+            return {}
+        return dict(zip(self.representation_info[cls]["names"], cls.attr_classes))
+
+    def get_representation_component_units(self, which="base"):
+        repr_or_diff_cls = self.get_representation_cls(which)
+        if repr_or_diff_cls is None:
+            return {}
+        repr_attrs = self.representation_info[repr_or_diff_cls]
+        return {k: v for k, v in zip(repr_attrs["names"], repr_attrs["units"]) if v}
+
+    representation_component_names = property(get_representation_component_names)
+
+    representation_component_units = property(get_representation_component_units)
