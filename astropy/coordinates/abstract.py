@@ -1301,3 +1301,96 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
             - other.data.without_differentials().represent_as(r.CartesianRepresentation)
         ).norm()
         return dist if dist.unit == u.one else Distance(dist)
+
+    @property
+    def cartesian(self):
+        """
+        Shorthand for a cartesian representation of the coordinates in this
+        object.
+        """
+        # TODO: if representations are updated to use a full transform graph,
+        #       the representation aliases should not be hard-coded like this
+        return self.represent_as("cartesian", in_frame_units=True)
+
+    @property
+    def cylindrical(self):
+        """
+        Shorthand for a cylindrical representation of the coordinates in this
+        object.
+        """
+        # TODO: if representations are updated to use a full transform graph,
+        #       the representation aliases should not be hard-coded like this
+        return self.represent_as("cylindrical", in_frame_units=True)
+
+    @property
+    def spherical(self):
+        """
+        Shorthand for a spherical representation of the coordinates in this
+        object.
+        """
+        # TODO: if representations are updated to use a full transform graph,
+        #       the representation aliases should not be hard-coded like this
+        return self.represent_as("spherical", in_frame_units=True)
+
+    @property
+    def sphericalcoslat(self):
+        """
+        Shorthand for a spherical representation of the positional data and a
+        `~astropy.coordinates.SphericalCosLatDifferential` for the velocity
+        data in this object.
+        """
+        # TODO: if representations are updated to use a full transform graph,
+        #       the representation aliases should not be hard-coded like this
+        return self.represent_as("spherical", "sphericalcoslat", in_frame_units=True)
+
+    @property
+    def velocity(self):
+        """
+        Shorthand for retrieving the Cartesian space-motion as a
+        `~astropy.coordinates.CartesianDifferential` object.
+
+        This is equivalent to calling ``self.cartesian.differentials['s']``.
+        """
+        if "s" not in self.data.differentials:
+            raise ValueError(
+                "Frame has no associated velocity (Differential) data information."
+            )
+
+        return self.cartesian.differentials["s"]
+
+    @property
+    def proper_motion(self):
+        """
+        Shorthand for the two-dimensional proper motion as a
+        `~astropy.units.Quantity` object with angular velocity units. In the
+        returned `~astropy.units.Quantity`, ``axis=0`` is the longitude/latitude
+        dimension so that ``.proper_motion[0]`` is the longitudinal proper
+        motion and ``.proper_motion[1]`` is latitudinal. The longitudinal proper
+        motion already includes the cos(latitude) term.
+        """
+        if "s" not in self.data.differentials:
+            raise ValueError(
+                "Frame has no associated velocity (Differential) data information."
+            )
+
+        sph = self.represent_as("spherical", "sphericalcoslat", in_frame_units=True)
+        pm_lon = sph.differentials["s"].d_lon_coslat
+        pm_lat = sph.differentials["s"].d_lat
+        return (
+            np.stack((pm_lon.value, pm_lat.to(pm_lon.unit).value), axis=0) * pm_lon.unit
+        )
+          
+    @property
+    def radial_velocity(self):
+        """
+        Shorthand for the radial or line-of-sight velocity as a
+        `~astropy.units.Quantity` object.
+        """
+        if "s" not in self.data.differentials:
+            raise ValueError(
+                "Frame has no associated velocity (Differential) data information."
+            )
+
+        sph = self.represent_as("spherical", in_frame_units=True)
+        return sph.differentials["s"].d_distance
+    
