@@ -1,6 +1,12 @@
 
 # TODO APE: update
-__all__ = ["AbstractCoordinate", "AbstractReferenceFrame", "_get_repr_cls", "_get_repr_classes"]
+__all__ = [
+    "AbstractCoordinate",
+    "AbstractReferenceFrame", 
+    "frame_transform_graph",
+    "_get_repr_cls", 
+    "_get_repr_classes"
+    ]
 
 import warnings
 from collections import defaultdict
@@ -367,7 +373,6 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
             )
 
         return representation_data
-
 
     @classmethod
     def _infer_repr_info(cls, repr_info):
@@ -938,7 +943,114 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
 
         self.cache["representation"][cache_key] = data
         return data
- 
+    
+    # TODO APE: merge with sky_coordinate version of transform_to?
+    def transform_to(self, new_frame):
+        """
+        Transform this object's coordinate data to a new frame.
+
+        Parameters
+        ----------
+        new_frame : coordinate-like
+            The frame to transform this coordinate frame into.
+
+        Returns
+        -------
+        transframe : coordinate-like
+            A new object with the coordinate data represented in the
+            ``newframe`` system.
+
+        Raises
+        ------
+        ValueError
+            If there is no possible transformation route.
+        """
+        from .errors import ConvertError
+
+        if self._data is None:
+            raise ValueError("Cannot transform a frame with no data")
+
+        if (
+            getattr(self.data, "differentials", None)
+            and hasattr(self, "obstime")
+            and hasattr(new_frame, "obstime")
+            and np.any(self.obstime != new_frame.obstime)
+        ):
+            raise NotImplementedError(
+                "You cannot transform a frame that has velocities to another frame at a"
+                " different obstime. If you think this should (or should not) be"
+                " possible, please comment at"
+                " https://github.com/astropy/astropy/issues/6280"
+            )
+
+        if hasattr(new_frame, "_sky_coord_frame"):
+            # Input new_frame is not a frame instance or class and is most
+            # likely a SkyCoord object.
+            new_frame = new_frame._sky_coord_frame
+
+        # TODO APE: revisit and potentially refactor
+        # Broadcast the data if necessary and set it
+        if self.data.shape != new_frame._shape:
+            try:
+                # if broadcasting isn't strictly needed, avoid it
+                # see https://github.com/astropy/astropy/issues/16219
+                data = data.reshape(self._shape)
+            except Exception:
+                data = data._apply(np.broadcast_to, shape=self._shape, subok=True)
+
+        trans = frame_transform_graph.get_transform(self.__class__, new_frame.__class__)
+        if trans is None:
+            if new_frame is self.__class__:
+                # no special transform needed, but should update frame info
+                return new_frame.realize_frame(self.data)
+            msg = "Cannot transform from {0} to {1}"
+            raise ConvertError(msg.format(self.__class__, new_frame.__class__))
+        return trans(self, new_frame)    
+
+    # TODO APE: merge with sky_coordinate version of is_transformable_to?
+    def is_transformable_to(self, new_frame):
+        """
+        Determines if this coordinate frame can be transformed to another
+        given frame.
+        
+        Parameters
+        ----------
+        new_frame : `~astropy.coordinates.BaseCoordinateFrame` subclass or instance
+            The proposed frame to transform into.
+
+        Returns
+        -------
+        transformable : bool or str
+            `True` if this can be transformed to ``new_frame``, `False` if
+            not, or the string 'same' if ``new_frame`` is the same system as
+            this object but no transformation is defined.
+
+        Notes
+        -----
+        A return value of 'same' means the transformation will work, but it will
+        just give back a copy of this object.  The intended usage is::
+
+            if coord.is_transformable_to(some_unknown_frame):
+                coord2 = coord.transform_to(some_unknown_frame)
+
+        This will work even if ``some_unknown_frame``  turns out to be the same
+        frame class as ``coord``.  This is intended for cases where the frame
+        is the same regardless of the frame attributes (e.g. ICRS), but be
+        aware that it *might* also indicate that someone forgot to define the
+        transformation between two objects of the same frame class but with
+        different attributes.
+        """
+        new_frame_cls = new_frame if isinstance(new_frame, type) else type(new_frame)
+        trans = frame_transform_graph.get_transform(self.__class__, new_frame_cls)
+
+        if trans is None:
+            if new_frame_cls is self.__class__:
+                return "same"
+            else:
+                return False
+        else:
+            return True
+        
     def _data_repr(self):
         """Returns a string representation of the coordinate data."""
         if not self.has_data:
