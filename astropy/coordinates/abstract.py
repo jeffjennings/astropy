@@ -1071,3 +1071,73 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
             new.info = self.info
 
         return new
+
+    def __dir__(self):
+        """
+        Override the builtin `dir` behavior to include representation
+        names.
+
+        TODO: dynamic representation transforms (i.e. include cylindrical et al.).
+        """
+        return sorted(
+            set(super().__dir__())
+            | set(self.representation_component_names)
+            | set(self.get_representation_component_names("s"))
+        )
+
+    def __getattr__(self, attr):
+        """
+        Allow access to attributes on the representation and differential as
+        found via ``self.get_representation_component_names``.
+
+        TODO: We should handle dynamic representation transforms here (e.g.,
+        `.cylindrical`) instead of defining properties as below.
+        """
+        # attr == '_representation' is likely from the hasattr() test in the
+        # representation property which is used for
+        # self.representation_component_names.
+        #
+        # Prevent infinite recursion here.
+        if attr.startswith("_"):
+            return self.__getattribute__(attr)  # Raise AttributeError.
+
+        repr_names = self.representation_component_names
+        if attr in repr_names:
+            if self._data is None:
+                # this raises the "no data" error by design - doing it this way means we
+                # don't have to replicate the error message here.
+                self.data  # noqa: B018
+
+            rep = self.represent_as(self.representation_type, in_frame_units=True)
+            val = getattr(rep, repr_names[attr])
+            return val
+
+        diff_names = self.get_representation_component_names("s")
+        if attr in diff_names:
+            if self._data is None:
+                self.data  # noqa: B018  # see above.
+            # TODO: this doesn't work for the case when there is only
+            # unitspherical information. The differential_type gets set to the
+            # default_differential, which expects full information, so the
+            # units don't work out
+            rep = self.represent_as(
+                in_frame_units=True, **self.get_representation_cls(None)
+            )
+            val = getattr(rep.differentials["s"], diff_names[attr])
+            return val
+
+        return self.__getattribute__(attr)  # Raise AttributeError.
+
+    def __setattr__(self, attr, value):
+        # Don't slow down access of private attributes!
+        if not attr.startswith("_"):
+            if hasattr(self, "representation_info"):
+                repr_attr_names = set()
+                for representation_attr in self.representation_info.values():
+                    repr_attr_names.update(representation_attr["names"])
+
+                if attr in repr_attr_names:
+                    raise AttributeError(f"Cannot set any frame attribute {attr}")
+
+        super().__setattr__(attr, value)
+
