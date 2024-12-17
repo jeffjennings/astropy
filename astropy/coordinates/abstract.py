@@ -172,4 +172,193 @@ class AbstractCoordinate(MaskableShapedLikeNDArray):
             # Set up representation cache.
             self.cache["representation"][key] = self._data
 
+    def _infer_representation(self, representation_type, differential_type):
+        if representation_type is None and differential_type is None:
+            return {"base": self.default_representation, "s": self.default_differential}
 
+        if representation_type is None:
+            representation_type = self.default_representation
+
+        if isinstance(differential_type, type) and issubclass(
+            differential_type, r.BaseDifferential
+        ):
+            # TODO: assumes the differential class is for the velocity
+            # differential
+            differential_type = {"s": differential_type}
+
+        elif isinstance(differential_type, str):
+            # TODO: assumes the differential class is for the velocity
+            # differential
+            diff_cls = r.DIFFERENTIAL_CLASSES[differential_type]
+            differential_type = {"s": diff_cls}
+
+        elif differential_type is None:
+            if representation_type == self.default_representation:
+                differential_type = {"s": self.default_differential}
+            else:
+                differential_type = {"s": "base"}  # see set_representation_cls()
+
+        return _get_repr_classes(representation_type, **differential_type)
+
+    def _infer_data(self, args, copy, kwargs):
+        # if not set below, this is a frame with no data
+        representation_data = None
+        differential_data = None
+
+        args = list(args)  # need to be able to pop them
+        if args and (isinstance(args[0], r.BaseRepresentation) or args[0] is None):
+            representation_data = args.pop(0)  # This can still be None
+            if len(args) > 0:
+                raise TypeError(
+                    "Cannot create a frame with both a representation object "
+                    "and other positional arguments"
+                )
+
+            if representation_data is not None:
+                diffs = representation_data.differentials
+                differential_data = diffs.get("s", None)
+                if (differential_data is None and len(diffs) > 0) or (
+                    differential_data is not None and len(diffs) > 1
+                ):
+                    raise ValueError(
+                        "Multiple differentials are associated with the representation"
+                        " object passed in to the frame initializer. Only a single"
+                        f" velocity differential is supported. Got: {diffs}"
+                    )
+
+        else:
+            representation_cls = self.get_representation_cls()
+            # Get any representation data passed in to the frame initializer
+            # using keyword or positional arguments for the component names
+            repr_kwargs = {}
+            for nmkw, nmrep in self.representation_component_names.items():
+                if len(args) > 0:
+                    # first gather up positional args
+                    repr_kwargs[nmrep] = args.pop(0)
+                elif nmkw in kwargs:
+                    repr_kwargs[nmrep] = kwargs.pop(nmkw)
+
+            # special-case the Spherical->UnitSpherical if no `distance`
+
+            if repr_kwargs:
+                # TODO: determine how to get rid of the part before the "try" -
+                # currently removing it has a performance regression for
+                # unitspherical because of the try-related overhead.
+                # Also frames have no way to indicate what the "distance" is
+                if repr_kwargs.get("distance", True) is None:
+                    del repr_kwargs["distance"]
+
+                if (
+                    issubclass(representation_cls, r.SphericalRepresentation)
+                    and "distance" not in repr_kwargs
+                ):
+                    representation_cls = representation_cls._unit_representation
+
+                try:
+                    representation_data = representation_cls(copy=copy, **repr_kwargs)
+                except TypeError as e:
+                    # this except clause is here to make the names of the
+                    # attributes more human-readable.  Without this the names
+                    # come from the representation instead of the frame's
+                    # attribute names.
+                    try:
+                        representation_data = representation_cls._unit_representation(
+                            copy=copy, **repr_kwargs
+                        )
+                    except Exception:
+                        msg = str(e)
+                        names = self.get_representation_component_names()
+                        for frame_name, repr_name in names.items():
+                            msg = msg.replace(repr_name, frame_name)
+                        msg = msg.replace("__init__()", f"{self.__class__.__name__}()")
+                        e.args = (msg,)
+                        raise e
+
+            # Now we handle the Differential data:
+            # Get any differential data passed in to the frame initializer
+            # using keyword or positional arguments for the component names
+            differential_cls = self.get_representation_cls("s")
+            diff_component_names = self.get_representation_component_names("s")
+            diff_kwargs = {}
+            for nmkw, nmrep in diff_component_names.items():
+                if len(args) > 0:
+                    # first gather up positional args
+                    diff_kwargs[nmrep] = args.pop(0)
+                elif nmkw in kwargs:
+                    diff_kwargs[nmrep] = kwargs.pop(nmkw)
+
+            if diff_kwargs:
+                if (
+                    hasattr(differential_cls, "_unit_differential")
+                    and "d_distance" not in diff_kwargs
+                ):
+                    differential_cls = differential_cls._unit_differential
+
+                elif len(diff_kwargs) == 1 and "d_distance" in diff_kwargs:
+                    differential_cls = r.RadialDifferential
+
+                try:
+                    differential_data = differential_cls(copy=copy, **diff_kwargs)
+                except TypeError as e:
+                    # this except clause is here to make the names of the
+                    # attributes more human-readable.  Without this the names
+                    # come from the representation instead of the frame's
+                    # attribute names.
+                    msg = str(e)
+                    names = self.get_representation_component_names("s")
+                    for frame_name, repr_name in names.items():
+                        msg = msg.replace(repr_name, frame_name)
+                    msg = msg.replace("__init__()", f"{self.__class__.__name__}()")
+                    e.args = (msg,)
+                    raise
+
+        if len(args) > 0:
+            raise TypeError(
+                f"{type(self).__name__}.__init__ had {len(args)} remaining "
+                "unhandled arguments"
+            )
+
+        if representation_data is None and differential_data is not None:
+            raise ValueError(
+                "Cannot pass in differential component data "
+                "without positional (representation) data."
+            )
+
+        if differential_data:
+            # Check that differential data provided has units compatible
+            # with time-derivative of representation data.
+            # NOTE: there is no dimensionless time while lengths can be
+            # dimensionless (u.dimensionless_unscaled).
+            for comp in representation_data.components:
+                if (diff_comp := f"d_{comp}") in differential_data.components:
+                    current_repr_unit = representation_data._units[comp]
+                    current_diff_unit = differential_data._units[diff_comp]
+                    expected_unit = current_repr_unit / u.s
+                    if not current_diff_unit.is_equivalent(expected_unit):
+                        for (
+                            key,
+                            val,
+                        ) in self.get_representation_component_names().items():
+                            if val == comp:
+                                current_repr_name = key
+                                break
+                        for key, val in self.get_representation_component_names(
+                            "s"
+                        ).items():
+                            if val == diff_comp:
+                                current_diff_name = key
+                                break
+                        raise ValueError(
+                            f'{current_repr_name} has unit "{current_repr_unit}" with'
+                            f' physical type "{current_repr_unit.physical_type}", but'
+                            f" {current_diff_name} has incompatible unit"
+                            f' "{current_diff_unit}" with physical type'
+                            f' "{current_diff_unit.physical_type}" instead of the'
+                            f' expected "{(expected_unit).physical_type}".'
+                        )
+
+            representation_data = representation_data.with_differentials(
+                {"s": differential_data}
+            )
+
+        return representation_data
