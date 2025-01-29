@@ -467,6 +467,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
         )
         return self.frame.is_transformable_to(new_frame)
 
+    # TODO APE: remove once made redundant by inheritance
     def transform_to(self, frame, merge_attributes=True):
         """Transform this coordinate to a new frame.
 
