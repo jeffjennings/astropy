@@ -35,9 +35,19 @@ from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
+import sphinx
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from sphinx.util import logging
+
+# xref: https://github.com/sphinx-doc/sphinx/issues/13232#issuecomment-2608708175
+if sys.version_info[:2] >= (3, 13) and sphinx.version_info[:2] < (8, 2):
+    import pathlib
+
+    from sphinx.util.typing import _INVALID_BUILTIN_CLASSES
+
+    _INVALID_BUILTIN_CLASSES[pathlib.Path] = "pathlib.Path"
+
 
 # from docs import global_substitutions
 
@@ -98,15 +108,10 @@ plot_pre_code = ""
 # -- General configuration ----------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = "3.0"
-
-# The intersphinx_mapping in sphinx_astropy.sphinx refers to astropy for
-# the benefit of other packages who want to refer to objects in the
-# astropy core.  However, we don't want to cyclically reference astropy in its
-# own build so we remove it here.
-del intersphinx_mapping["astropy"]
+needs_sphinx = "8.2.0"  # keep in sync with pyproject.toml
 
 # add any custom intersphinx for astropy
+intersphinx_resolve_self = "astropy"
 intersphinx_mapping.update(
     {
         "pyerfa": ("https://pyerfa.readthedocs.io/en/stable/", None),
@@ -206,6 +211,9 @@ numpydoc_xref_aliases.update(numpydoc_xref_astropy_aliases)
 # Turn off table of contents entries for functions and classes
 toc_object_entries = False
 
+# Disable type hints in the API documentation.
+autodoc_typehints = "none"
+
 # -- Project information ------------------------------------------------------
 
 project = "Astropy"
@@ -235,9 +243,13 @@ modindex_common_prefix = ["astropy."]
 
 html_theme_options.update(
     {
+        "analytics": {
+            "google_analytics_id": "G-R0510VK4B6",
+        },
         "github_url": "https://github.com/astropy/astropy",
         "external_links": [
-            {"name": "Tutorials", "url": "https://learn.astropy.org/"},
+            {"name": "Learn", "url": "https://learn.astropy.org/"},
+            {"name": "Packages", "url": "https://www.astropy.org/affiliated/"},
         ],
         "use_edit_page_button": True,
         "logo": {
@@ -247,6 +259,7 @@ html_theme_options.update(
         # https://github.com/pydata/pydata-sphinx-theme/issues/1492
         "navigation_with_keys": False,
         "announcement": "https://www.astropy.org/annoucement_banner.html",
+        "header_links_before_dropdown": 6,
     }
 )
 
@@ -282,6 +295,12 @@ def _custom_edit_url(
         if module := getattr(item, "__module__", None):
             mod_dir, _, mod_file = module.rpartition(".")
             new_file_name = mod_file + ".py"
+            # Remove wrappings, such as functools.cache in astropy.units.equivalencies.
+            # This also avoids "could not find source" warnings.  But don't remove
+            # a correct one for sharedmethod.
+            if module != "astropy.utils.decorators":
+                while wrapped := getattr(item, "__wrapped__", None):
+                    item = wrapped
             try:
                 line_no = inspect.findsource(item)[1]
             except Exception:
@@ -380,43 +399,6 @@ suppress_warnings = [
     "config.cache",  # our rebuild is okay
 ]
 
-# -- Options for the Sphinx gallery -------------------------------------------
-
-try:
-    import warnings
-
-    import sphinx_gallery
-
-    extensions += ["sphinx_gallery.gen_gallery"]
-
-    sphinx_gallery_conf = {
-        "backreferences_dir": "generated/modules",  # path to store the module using example template
-        "filename_pattern": "^((?!skip_).)*$",  # execute all examples except those that start with "skip_"
-        "examples_dirs": f"..{os.sep}examples",  # path to the examples scripts
-        "gallery_dirs": "generated/examples",  # path to save gallery generated examples
-        "reference_url": {
-            "astropy": None,
-            "matplotlib": "https://matplotlib.org/stable/",
-            "numpy": "https://numpy.org/doc/stable/",
-        },
-        "abort_on_example_error": True,
-    }
-
-    # Filter out backend-related warnings as described in
-    # https://github.com/sphinx-gallery/sphinx-gallery/pull/564
-    warnings.filterwarnings(
-        "ignore",
-        category=UserWarning,
-        message=(
-            "Matplotlib is currently using agg, which is a"
-            " non-GUI backend, so cannot show the figure."
-        ),
-    )
-
-except ImportError:
-    sphinx_gallery = None
-
-
 # -- Options for linkcheck output -------------------------------------------
 linkcheck_retry = 5
 linkcheck_ignore = [
@@ -427,6 +409,7 @@ linkcheck_ignore = [
     "http://data.astropy.org",
     "https://doi.org/",  # CI blocked by service provider
     "https://ui.adsabs.harvard.edu",  # CI blocked by service provider
+    "https://hst-docs.stsci.edu",  # CI blocked by service provider
     "https://www.tandfonline.com/",  # 403 Client Error: Forbidden
     "https://stackoverflow.com/",  # 403 Client Error: Forbidden
     "https://ieeexplore.ieee.org/",  # 418 Client Error: I'm a teapot
@@ -452,47 +435,6 @@ def rstjinja(app, docname, source):
             source[0], app.config.html_context
         )
         source[0] = rendered
-
-
-def resolve_astropy_reference(app, env, node, contnode):
-    """
-    Reference targets for ``astropy:`` are special cases.
-
-    Documentation links in astropy can be set up as intersphinx links so that
-    affiliate packages do not have to override the docstrings when building
-    the docs.
-
-    """
-    # should the node be processed?
-    reftarget = node.get("reftarget")  # str or None
-    if str(reftarget).startswith("astropy:"):
-        # This allows Astropy to use intersphinx links to itself and have
-        # them resolve to local links. Downstream packages will see intersphinx.
-        # TODO: Remove this when https://github.com/sphinx-doc/sphinx/issues/9169 is implemented upstream.
-        process, replace = True, "astropy:"
-    else:
-        process, replace = False, ""
-
-    # make link local
-    if process:
-        reftype = node.get("reftype")
-        refdoc = node.get("refdoc", app.env.docname)
-        # convert astropy intersphinx targets to local links.
-        # there are a few types of intersphinx link patterns, as described in
-        # https://docs.readthedocs.io/en/stable/guides/intersphinx.html
-        reftarget = reftarget.replace(replace, "")
-        if reftype == "doc":  # also need to replace the doc link
-            node.replace_attr("reftarget", reftarget)
-        # Delegate to the ref node's original domain/target (typically :ref:)
-        try:
-            domain = app.env.domains[node["refdomain"]]
-            return domain.resolve_xref(
-                app.env, refdoc, app.builder, reftype, reftarget, node, contnode
-            )
-        except Exception:
-            pass
-
-        # Otherwise return None which should delegate to intersphinx
 
 
 __minimum_python_version__ = pyproject["project"]["requires-python"].replace(">=", "")
@@ -627,11 +569,15 @@ links_to_become_substitutions: dict[str, str] = {
     # s3fs
     "s3fs": "https://s3fs.readthedocs.io",
     # TOPCAT
-    "STIL": "http://www.starlink.ac.uk/stil",
-    "STILTS": "http://www.starlink.ac.uk/stilts",
-    "TOPCAT": "http://www.starlink.ac.uk/topcat",
+    "STIL": "https://www.star.bristol.ac.uk/mbt/stil",
+    "STILTS": "https://www.star.bristol.ac.uk/mbt/stilts",
+    "TOPCAT": "https://www.star.bristol.ac.uk/mbt/topcat",
     # OpenAstronomy
     "OpenAstronomy Packaging Guide": "https://packaging-guide.openastronomy.org/en/latest",
+    # Miscellaneous
+    "HDF5": "https://www.hdfgroup.org/HDF5",
+    "h5py": "http://www.h5py.org",
+    "Parquet": "https://parquet.apache.org",
 }
 
 processed_links = {
@@ -642,17 +588,5 @@ global_substitutions |= processed_links
 
 
 def setup(app):
-    if sphinx_gallery is None:
-        logger.warning(
-            "The sphinx_gallery extension is not installed, so the "
-            "gallery will not be built.  You will probably see "
-            "additional warnings about undefined references due "
-            "to this."
-        )
-
     # Generate the page from Jinja template
     app.connect("source-read", rstjinja)
-    # Set this to higher priority than intersphinx; this way when building
-    # docs astropy: targets will go to the local docs instead of the
-    # intersphinx mapping
-    app.connect("missing-reference", resolve_astropy_reference, priority=400)

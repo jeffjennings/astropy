@@ -1,4 +1,5 @@
 # Functions/classes for WCSAxes related to APE14 WCSes
+from __future__ import annotations
 
 from contextlib import contextmanager
 
@@ -28,7 +29,7 @@ IDENTITY.wcs.cdelt = [1.0, 1.0]
 UCD_COORD_META_MAPPING = {
     "lon": {"coord_type": "longitude"},
     "lat": {"coord_type": "latitude"},
-    "ra": {"coord_type": "longitude", "format_unit": u.hourangle},
+    "ra": {"coord_type": "longitude"},
     "dec": {"coord_type": "latitude"},
     "alt": {"coord_type": "longitude"},
     "az": {"coord_type": "latitude"},
@@ -101,17 +102,24 @@ def custom_ucd_coord_meta_mapping(mapping, *, overwrite=False):
     <BLANKLINE>
     >
     """
+    added_keys = []
+    overwritten = {}
     for k, v in mapping.items():
         k = k.removeprefix("custom:")
-        if not overwrite and k in CUSTOM_UCD_COORD_META_MAPPING:
-            raise ValueError(f"UCD metadata mapping {k} already exists.")
+        if k in CUSTOM_UCD_COORD_META_MAPPING:
+            if not overwrite:
+                raise ValueError(f"UCD metadata mapping {k} already exists.")
+            overwritten[k] = CUSTOM_UCD_COORD_META_MAPPING[k]
+        else:
+            added_keys.append(k)
         CUSTOM_UCD_COORD_META_MAPPING[k] = v
 
-    yield
-
-    for k in mapping.keys():
-        k = k.removeprefix("custom:")
-        del CUSTOM_UCD_COORD_META_MAPPING[k]
+    try:
+        yield
+    finally:
+        for k in added_keys:
+            del CUSTOM_UCD_COORD_META_MAPPING[k]
+        CUSTOM_UCD_COORD_META_MAPPING.update(overwritten)
 
 
 def transform_coord_meta_from_wcs(wcs, frame_class, slices=None):
@@ -169,6 +177,11 @@ def transform_coord_meta_from_wcs(wcs, frame_class, slices=None):
                 for ucd, meta in UCD_COORD_META_MAPPING.items():
                     if ucd == axis_type_split[-1]:
                         dim_meta.update(meta)
+                        # We only do the following if the original unit was
+                        # degrees. If the unit was e.g. arcsec, it seems
+                        # reasonable to stick to the WCS unit.
+                        if ucd == "ra" and axis_unit is u.deg:
+                            dim_meta["format_unit"] = u.hourangle
                         break
 
         coord_meta["type"].append(dim_meta["coord_type"])
@@ -348,10 +361,12 @@ class WCSWorld2PixelTransform(CurvedTransform):
         # Convert to a list of arrays
         world = list(world.T)
 
-        if len(world) != self.wcs.world_n_dim:
-            raise ValueError(
-                f"Expected {self.wcs.world_n_dim} world coordinates, got {len(world)} "
-            )
+        if len(world) != 2:
+            raise ValueError(f"Expected 2 world coordinates, got {len(world)}")
+
+        if self.wcs.world_n_dim == 1:
+            world_non_wcs = world[1]
+            world = world[0:1]
 
         if len(world[0]) == 0:
             pixel = np.zeros((0, 2))
@@ -361,9 +376,10 @@ class WCSWorld2PixelTransform(CurvedTransform):
         if self.invert_xy:
             pixel = pixel[::-1]
 
-        pixel = np.array(pixel).T
+        if self.wcs.world_n_dim == 1:
+            pixel = [pixel, world_non_wcs]
 
-        return pixel
+        return np.array(pixel).T
 
     transform_non_affine = transform
 
@@ -423,9 +439,7 @@ class WCSPixel2WorldTransform(CurvedTransform):
         if self.wcs.world_n_dim == 1:
             world = [world]
 
-        world = np.array(world).T
-
-        return world
+        return np.array(world).T
 
     transform_non_affine = transform
 

@@ -15,11 +15,7 @@ from numpy import ma
 from astropy import log
 from astropy.io.registry import UnifiedReadWriteMethod
 from astropy.units import Quantity, QuantityInfo
-from astropy.utils import (
-    ShapedLikeNDArray,
-    deprecated,
-    isiterable,
-)
+from astropy.utils import ShapedLikeNDArray, deprecated
 from astropy.utils.compat import COPY_IF_NEEDED, NUMPY_LT_1_25
 from astropy.utils.console import color_print
 from astropy.utils.data_info import BaseColumnInfo, DataInfo, MixinInfo
@@ -302,12 +298,19 @@ class TableColumns(OrderedDict):
         names = (f"'{x}'" for x in self.keys())
         return f"<{self.__class__.__name__} names=({','.join(names)})>"
 
-    def _rename_column(self, name, new_name):
+    def _rename_column(self, name: str, new_name: str):
         if name == new_name:
             return
 
         if new_name in self:
             raise KeyError(f"Column {new_name} already exists")
+
+        if isinstance(new_name, str):
+            new_name = str(new_name)
+        else:
+            raise TypeError(
+                f"Expected a str value, got {new_name} with type {type(new_name).__name__}"
+            )
 
         # Rename column names in pprint include/exclude attributes as needed
         parent_table = self[name].info.parent_table
@@ -746,7 +749,9 @@ class Table:
             names_from_list_of_dict = _get_names_from_list_of_dict(rows)
             if names_from_list_of_dict:
                 data = rows
-            elif isinstance(rows, self.Row):
+            elif isinstance(rows, self.Row) or (
+                isinstance(rows, np.ndarray) and rows.dtype.names
+            ):
                 data = rows
             else:
                 data = list(zip(*rows))
@@ -781,7 +786,16 @@ class Table:
                 f"__init__() got unexpected keyword argument {next(iter(kwargs.keys()))!r}"
             )
 
-        if isinstance(data, np.ndarray) and data.shape == (0,) and not data.dtype.names:
+        # Treat any empty numpy array as None, except for structured arrays since they
+        # provide column names and dtypes.
+        #
+        # Init with rows=[] or data=[] (or tuples) is allowed and taken to mean no data.
+        # This allows supplying names and dtype if desired. `data=[]` is ambiguous,
+        # because it could mean no columns, or it could mean no rows for list of dict.
+        # For compatibility with the latter, interpret data=[] as data=None.
+        if (
+            isinstance(data, np.ndarray) and data.size == 0 and not data.dtype.names
+        ) or (isinstance(data, (list, tuple)) and len(data) == 0):
             data = None
 
         if isinstance(data, self.Row):
@@ -1075,8 +1089,17 @@ class Table:
             Indexing engine class to use, either `~astropy.table.SortedArray`,
             `~astropy.table.BST`, or `~astropy.table.SCEngine`. If the supplied
             argument is None (by default), use `~astropy.table.SortedArray`.
-        unique : bool
-            Whether the values of the index must be unique. Default is False.
+        unique : bool (default: False)
+            If set to True, an exception will be raised if duplicate rows exist.
+
+        Raises
+        ------
+        ValueError
+            If any selected column does not support indexing, or has more than
+            one dimension.
+        ValueError
+            If unique=True and duplicate rows are found.
+
         """
         if isinstance(colnames, str):
             colnames = (colnames,)
@@ -1176,7 +1199,7 @@ class Table:
         the same length as data.
         """
         for inp_list, inp_str in ((dtype, "dtype"), (names, "names")):
-            if not isiterable(inp_list):
+            if not np.iterable(inp_list):
                 raise ValueError(f"{inp_str} must be a list or None")
 
         if len(names) != n_cols or len(dtype) != n_cols:
@@ -1840,7 +1863,7 @@ class Table:
         max_lines=5000,
         jsviewer=False,
         browser="default",
-        jskwargs={"use_local_files": True},
+        jskwargs={"use_local_files": False},
         tableid=None,
         table_class="display compact",
         css=None,
@@ -1858,7 +1881,11 @@ class Table:
         jsviewer : bool
             If `True`, prepends some javascript headers so that the table is
             rendered as a `DataTables <https://datatables.net>`_ data table.
-            This allows in-browser searching & sorting.
+            This allows in-browser searching & sorting, but requires a
+            connection to the internet to load the necessary javascript
+            libraries from a CDN. Working offline may work in limited
+            circumstances, if the browser has cached the necessary libraries
+            from a previous use of this method.
         browser : str
             Any legal browser name, e.g. ``'firefox'``, ``'chrome'``,
             ``'safari'`` (for mac, you may need to use ``'open -a
@@ -1866,8 +1893,8 @@ class Table:
             ``'default'``, will use the system default browser.
         jskwargs : dict
             Passed to the `astropy.table.JSViewer` init. Defaults to
-            ``{'use_local_files': True}`` which means that the JavaScript
-            libraries will be served from local copies.
+            ``{'use_local_files': False}`` which means that the JavaScript
+            libraries will be loaded from a CDN.
         tableid : str or None
             An html ID tag for the table.  Default is ``table{id}``, where id
             is the unique integer id of the table object, id(self).
@@ -1924,7 +1951,7 @@ class Table:
         except webbrowser.Error:
             log.error(f"Browser '{browser}' not found.")
         else:
-            br.open(urljoin("file:", pathname2url(path)))
+            br.open(urljoin("file:", pathname2url(str(path))))
 
     @format_doc(_pformat_docs, id="{id}")
     def pformat(
@@ -2752,9 +2779,27 @@ class Table:
               2 0.2   y
               3 0.3   z
         """
-        # Update indices
-        for index in self.indices:
-            index.remove_rows(row_specifier)
+        # If the table has been sliced then each index will have original=False
+        # indicating that the data are a sliced reference (not from the original table).
+        sliced = any(not index.original for index in self.indices)
+        if not sliced:
+            # For the not-sliced case we can use the remove_rows method to efficiently
+            # update the existing indices.
+            for index in self.indices:
+                index.remove_rows(row_specifier)
+        else:
+            # Removing rows in a sliced table requires fully remaking the indices. Each
+            # such SlicedIndex has a reference to the original table index and the
+            # slice, and it is not possible to maintain that if a row is removed. First
+            # remove all the existing indices but keep track of the index column names
+            # to later remake the indices.
+            indices_colnames = [
+                tuple(col.info.name for col in index.columns) for index in self.indices
+            ]
+            for col in self.itercols():
+                # Note - `indices` is a property of BaseColumnInfo and will always exist
+                # (and be a list) on col.info.
+                col.info.indices.clear()
 
         keep_mask = np.ones(len(self), dtype=bool)
         keep_mask[row_specifier] = False
@@ -2766,6 +2811,12 @@ class Table:
             columns[name] = newcol
 
         self._replace_cols(columns)
+
+        if sliced:
+            # For the sliced case, re-create the indices (in order) after row removal.
+            # This will also preserve the first index as the primary key.
+            for index_colnames in indices_colnames:
+                self.add_index(index_colnames)
 
         # Revert groups to default (ungrouped) state
         if hasattr(self, "_groups"):
@@ -3266,8 +3317,10 @@ class Table:
             vals = vals_list
             mask = mask_list
 
-        if isiterable(vals):
-            if mask is not None and (not isiterable(mask) or isinstance(mask, Mapping)):
+        if np.iterable(vals):
+            if mask is not None and (
+                not np.iterable(mask) or isinstance(mask, Mapping)
+            ):
                 raise TypeError("Mismatch between type of vals and mask")
 
             if len(self.columns) != len(vals):
@@ -3890,7 +3943,7 @@ class Table:
                 # other = {'a': 2, 'b': 2} and then equality does a
                 # column-by-column broadcasting.
                 names = self.colnames
-                other = {name: other for name in names}
+                other = dict.fromkeys(names, other)
 
         # Require column names match but do not require same column order
         if set(self.colnames) != set(names):
@@ -3964,6 +4017,11 @@ class Table:
         -------
         out : `~astropy.table.Table`
             New table with groups set
+
+        Notes
+        -----
+        The underlying sorting algorithm is guaranteed stable, meaning that the
+        original table order is preserved within each group.
         """
         return groups.table_group_by(self, keys)
 
@@ -4094,15 +4152,13 @@ class Table:
 
         badcols = [name for name, col in self.columns.items() if len(col.shape) > 1]
         if badcols:
-            # fmt: off
             raise ValueError(
-                f'Cannot convert a table with multidimensional columns to a '
-                f'pandas DataFrame. Offending columns are: {badcols}\n'
-                f'One can filter out such columns using:\n'
-                f'names = [name for name in tbl.colnames if len(tbl[name].shape) <= 1]\n'
-                f'tbl[names].to_pandas(...)'
+                f"Cannot convert a table with multidimensional columns to a "
+                f"pandas DataFrame. Offending columns are: {badcols}\n"
+                f"One can filter out such columns using:\n"
+                f"names = [name for name in tbl.colnames if len(tbl[name].shape) <= 1]\n"
+                f"tbl[names].to_pandas(...)"
             )
-            # fmt: on
 
         out = OrderedDict()
 
@@ -4231,9 +4287,9 @@ class Table:
             units = [units.get(name) for name in names]
 
         for name, column, data, mask, unit in zip(names, columns, datas, masks, units):
-            if column.dtype.kind in ["u", "i"] and np.any(mask):
-                # Special-case support for pandas nullable int
-                np_dtype = str(column.dtype).lower()
+            if column.dtype.kind in ["u", "i", "b"] and np.any(mask):
+                # Special-case support for pandas nullable int and bool
+                np_dtype = column.dtype.numpy_dtype
                 data = np.zeros(shape=column.shape, dtype=np_dtype)
                 data[~mask] = column[~mask]
                 out[name] = MaskedColumn(

@@ -19,8 +19,6 @@ from astropy.io.fits.util import (
     _free_space_check,
     _get_array_mmap,
     _is_int,
-    _is_pseudo_integer,
-    _pseudo_zero,
     decode_ascii,
     first,
     itersubclasses,
@@ -205,7 +203,7 @@ class _BaseHDU:
 
             cls.data = data_prop.deleter(data)
 
-        return super().__init_subclass__(**kwargs)
+        super().__init_subclass__(**kwargs)
 
     @property
     def header(self):
@@ -396,10 +394,10 @@ class _BaseHDU:
 
         Notes
         -----
-        gzip, zip and bzip2 compression algorithms are natively supported.
+        gzip, zip, bzip2 and lzma compression algorithms are natively supported.
         Compression mode is determined from the filename extension
-        ('.gz', '.zip' or '.bz2' respectively).  It is also possible to pass a
-        compressed file object, e.g. `gzip.GzipFile`.
+        ('.gz', '.zip', '.bz2' or '.xz' respectively).  It is also possible to
+        pass a compressed file object, e.g. `gzip.GzipFile`.
         """
         from .hdulist import HDUList
 
@@ -555,73 +553,8 @@ class _BaseHDU:
         else:
             return None
 
-    # TODO: Rework checksum handling so that it's not necessary to add a
-    # checksum argument here
-    # TODO: The BaseHDU class shouldn't even handle checksums since they're
-    # only implemented on _ValidHDU...
-    def _prewriteto(self, checksum=False, inplace=False):
-        self._update_pseudo_int_scale_keywords()
-
-        # Handle checksum
-        self._update_checksum(checksum)
-
-    def _update_pseudo_int_scale_keywords(self):
-        """
-        If the data is signed int 8, unsigned int 16, 32, or 64,
-        add BSCALE/BZERO cards to header.
-        """
-        if self._has_data and self._standard and _is_pseudo_integer(self.data.dtype):
-            # CompImageHDUs need TFIELDS immediately after GCOUNT,
-            # so BSCALE has to go after TFIELDS if it exists.
-            if "TFIELDS" in self._header:
-                self._header.set("BSCALE", 1, after="TFIELDS")
-            elif "GCOUNT" in self._header:
-                self._header.set("BSCALE", 1, after="GCOUNT")
-            else:
-                self._header.set("BSCALE", 1)
-            self._header.set("BZERO", _pseudo_zero(self.data.dtype), after="BSCALE")
-
-    def _update_checksum(
-        self, checksum, checksum_keyword="CHECKSUM", datasum_keyword="DATASUM"
-    ):
-        """Update the 'CHECKSUM' and 'DATASUM' keywords in the header (or
-        keywords with equivalent semantics given by the ``checksum_keyword``
-        and ``datasum_keyword`` arguments--see for example ``CompImageHDU``
-        for an example of why this might need to be overridden).
-        """
-        # If the data is loaded it isn't necessarily 'modified', but we have no
-        # way of knowing for sure
-        modified = self._header._modified or self._data_loaded
-
-        if checksum == "remove":
-            self._header.remove(checksum_keyword, ignore_missing=True)
-            self._header.remove(datasum_keyword, ignore_missing=True)
-        elif (
-            modified
-            or self._new
-            or (
-                checksum
-                and (
-                    "CHECKSUM" not in self._header
-                    or "DATASUM" not in self._header
-                    or not self._checksum_valid
-                    or not self._datasum_valid
-                )
-            )
-        ):
-            if checksum == "datasum":
-                self.add_datasum(datasum_keyword=datasum_keyword)
-            elif checksum:
-                self.add_checksum(
-                    checksum_keyword=checksum_keyword, datasum_keyword=datasum_keyword
-                )
-
     def _postwriteto(self):
-        # If data is unsigned integer 16, 32 or 64, remove the
-        # BSCALE/BZERO cards
-        if self._has_data and self._standard and _is_pseudo_integer(self.data.dtype):
-            for keyword in ("BSCALE", "BZERO"):
-                self._header.remove(keyword, ignore_missing=True)
+        pass
 
     def _writeheader(self, fileobj):
         offset = 0
@@ -1098,6 +1031,10 @@ class _ValidHDU(_BaseHDU, _Verify):
 
         return errs
 
+    def _prewriteto(self, inplace=False):
+        # Handle checksum
+        self._update_checksum()
+
     # TODO: Improve this API a little bit--for one, most of these arguments
     # could be optional
     def req_cards(self, keyword, pos, test, fix_value, option, errlist):
@@ -1392,6 +1329,39 @@ class _ValidHDU(_BaseHDU, _Verify):
                 warnings.warn(
                     f"Datasum verification failed for HDU {self.name, self.ver}.\n",
                     AstropyUserWarning,
+                )
+
+    def _update_checksum(self, checksum_keyword="CHECKSUM", datasum_keyword="DATASUM"):
+        """Update the 'CHECKSUM' and 'DATASUM' keywords in the header (or
+        keywords with equivalent semantics given by the ``checksum_keyword``
+        and ``datasum_keyword`` arguments--see for example ``CompImageHDU``
+        for an example of why this might need to be overridden).
+        """
+        # If the data is loaded it isn't necessarily 'modified', but we have no
+        # way of knowing for sure
+        modified = self._header._modified or self._data_loaded
+
+        if self._output_checksum == "remove":
+            self._header.remove(checksum_keyword, ignore_missing=True)
+            self._header.remove(datasum_keyword, ignore_missing=True)
+        elif (
+            modified
+            or self._new
+            or (
+                self._output_checksum
+                and (
+                    "CHECKSUM" not in self._header
+                    or "DATASUM" not in self._header
+                    or not self._checksum_valid
+                    or not self._datasum_valid
+                )
+            )
+        ):
+            if self._output_checksum == "datasum":
+                self.add_datasum(datasum_keyword=datasum_keyword)
+            elif self._output_checksum:
+                self.add_checksum(
+                    checksum_keyword=checksum_keyword, datasum_keyword=datasum_keyword
                 )
 
     def _get_timestamp(self):

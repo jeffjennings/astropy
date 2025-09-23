@@ -86,7 +86,7 @@ class BitFlagNameMeta(type):
         attrl = list(map(str.lower, attr))
 
         if _ENABLE_BITFLAG_CACHING:
-            cache = dict()
+            cache = {}
 
         for b in bases:
             for k, v in b.__dict__.items():
@@ -426,6 +426,7 @@ def interpret_bit_flags(bit_flags, flip_bits=None, flag_name_map=None):
                 )
             bit_flags = [bit_flags]
 
+        bit_flags = [f.strip() for f in bit_flags]
         if flag_name_map is not None:
             try:
                 int(bit_flags[0])

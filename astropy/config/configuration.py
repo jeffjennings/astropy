@@ -9,16 +9,25 @@ configuration files for Astropy and affiliated packages.
     found at https://configobj.readthedocs.io .
 """
 
+from __future__ import annotations
+
 import contextlib
 import importlib
 import io
+import operator
 import os
 import pkgutil
 import warnings
+from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
+from functools import reduce
+from inspect import getdoc
 from pathlib import Path
 from textwrap import TextWrapper
+from typing import Final
 from warnings import warn
+
+import numpy as np
 
 from astropy.extern.configobj import configobj, validate
 from astropy.utils import find_current_module, silence
@@ -93,15 +102,15 @@ class ConfigNamespace(metaclass=_ConfigNamespaceMeta):
         conf = Conf()
     """
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[str, None, None]:
         for key, val in self.__class__.__dict__.items():
             if isinstance(val, ConfigItem):
                 yield key
 
     def __str__(self):
-        try:
-            header = f"{self.__doc__.strip()}\n\n"
-        except AttributeError:
+        if (docstring := getdoc(self)) is not None:
+            header = f"{docstring}\n\n"
+        else:
             current_module = str(find_current_module(2)).split("'")[1]
             header = f"Configuration parameters for `{current_module}`\n\n"
         return header + "\n\n".join(map(str, self.values()))
@@ -109,19 +118,19 @@ class ConfigNamespace(metaclass=_ConfigNamespaceMeta):
     keys = __iter__
     """Iterate over configuration item names."""
 
-    def values(self):
+    def values(self) -> Generator[ConfigItem, None, None]:
         """Iterate over configuration item values."""
         for val in self.__class__.__dict__.values():
             if isinstance(val, ConfigItem):
                 yield val
 
-    def items(self):
+    def items(self) -> Generator[tuple[str, ConfigItem], None, None]:
         """Iterate over configuration item ``(name, value)`` pairs."""
         for key, val in self.__class__.__dict__.items():
             if isinstance(val, ConfigItem):
                 yield key, val
 
-    def help(self, name=None):
+    def help(self, name: str | None = None) -> None:
         """Print info about configuration items.
 
         Parameters
@@ -194,7 +203,7 @@ class ConfigNamespace(metaclass=_ConfigNamespaceMeta):
         for item in self.values():
             item.reload()
 
-    def reset(self, attr=None):
+    def reset(self, attr: str | None = None) -> None:
         """
         Reset a configuration item to its default.
 
@@ -283,8 +292,6 @@ class ConfigItem:
     def __init__(
         self, defaultvalue="", description=None, cfgtype=None, module=None, aliases=None
     ):
-        from astropy.utils import isiterable
-
         if module is None:
             module = find_current_module(2)
             if module is None:
@@ -300,7 +307,7 @@ class ConfigItem:
 
         # now determine cfgtype if it is not given
         if cfgtype is None:
-            if isiterable(defaultvalue) and not isinstance(defaultvalue, str):
+            if np.iterable(defaultvalue) and not isinstance(defaultvalue, str):
                 # it is an options list
                 dvstr = [str(v) for v in defaultvalue]
                 cfgtype = "option(" + ", ".join(dvstr) + ")"
@@ -421,13 +428,13 @@ class ConfigItem:
             baseobj[self.name] = newobj[self.name]
         return baseobj.get(self.name)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"<{self.__class__.__name__}: name={self.name!r} value={self()!r} at"
             f" 0x{id(self):x}>"
         )
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "\n".join(
             (
                 f"{self.__class__.__name__}: {self.name}",
@@ -524,7 +531,7 @@ class ConfigItem:
 
 # this dictionary stores the primary copy of the ConfigObj's for each
 # root package
-_cfgobjs = {}
+_cfgobjs: Final[dict[str, configobj.ConfigObj]] = {}
 
 
 def get_config_filename(packageormod=None, rootname=None):
@@ -632,6 +639,17 @@ def get_config(packageormod=None, reload=False, rootname=None):
         return cobj
 
 
+def _recursive_subclasses(class_):
+    """
+    Return all subclasses of all subclasses.
+    """
+    subclasses = class_.__subclasses__()
+    if not subclasses:
+        return []
+    next = reduce(operator.concat, [_recursive_subclasses(cls) for cls in subclasses])
+    return [*next, *subclasses]
+
+
 def generate_config(pkgname="astropy", filename=None, verbose=False):
     """Generates a configuration file, from the list of `ConfigItem`
     objects for each subpackage.
@@ -683,8 +701,7 @@ def generate_config(pkgname="astropy", filename=None, verbose=False):
             # assume it's a file object, or io.StringIO
             fp = filename
 
-        # Parse the subclasses, ordered by their module name
-        subclasses = ConfigNamespace.__subclasses__()
+        subclasses = _recursive_subclasses(ConfigNamespace)
         processed = set()
 
         for conf in sorted(subclasses, key=lambda x: x.__module__):
@@ -721,7 +738,7 @@ def generate_config(pkgname="astropy", filename=None, verbose=False):
                     else:
                         fp.write(
                             f"# {item.name} ="
-                            f' {",".join(map(str, item.defaultvalue))}\n\n'
+                            f" {','.join(map(str, item.defaultvalue))}\n\n"
                         )
                 else:
                     fp.write(f"# {item.name} = {item.defaultvalue}\n\n")

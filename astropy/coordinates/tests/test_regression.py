@@ -42,7 +42,7 @@ from astropy.coordinates import (
 )
 from astropy.coordinates.sites import get_builtin_sites
 from astropy.table import Table
-from astropy.tests.helper import PYTEST_LT_8_0, assert_quantity_allclose
+from astropy.tests.helper import assert_quantity_allclose
 from astropy.time import Time
 from astropy.units import allclose as quantity_allclose
 from astropy.utils import iers
@@ -252,14 +252,11 @@ def test_regression_futuretimes_4302():
     else:
         ctx1 = nullcontext()
 
-    ctx2 = pytest.warns(ErfaWarning, match=".*dubious year.*")
-
-    if PYTEST_LT_8_0:
-        ctx3 = nullcontext()
-    else:
-        ctx3 = pytest.warns(AstropyWarning, match=".*times after IERS data is valid.*")
-
-    with ctx1, ctx2, ctx3:
+    with (
+        ctx1,
+        pytest.warns(ErfaWarning, match=".*dubious year.*"),
+        pytest.warns(AstropyWarning, match=".*times after IERS data is valid.*"),
+    ):
         future_time = Time("2511-5-1")
         c = CIRS(1 * u.deg, 2 * u.deg, obstime=future_time)
         with iers.conf.set_temp("auto_max_age", None):
@@ -516,44 +513,6 @@ def test_regression_6236():
     assert msf3.representation_type is UnitSphericalRepresentation
     assert msf4.representation_type is CartesianRepresentation
     assert msf4.my_attr == msf3.my_attr
-
-
-@pytest.mark.skipif(not HAS_SCIPY, reason="No Scipy")
-def test_regression_6347():
-    sc1 = SkyCoord([1, 2] * u.deg, [3, 4] * u.deg)
-    sc2 = SkyCoord([1.1, 2.1] * u.deg, [3.1, 4.1] * u.deg)
-    sc0 = sc1[:0]
-
-    idx1_10, idx2_10, d2d_10, d3d_10 = sc1.search_around_sky(sc2, 10 * u.arcmin)
-    idx1_1, idx2_1, d2d_1, d3d_1 = sc1.search_around_sky(sc2, 1 * u.arcmin)
-    idx1_0, idx2_0, d2d_0, d3d_0 = sc0.search_around_sky(sc2, 10 * u.arcmin)
-
-    assert len(d2d_10) == 2
-
-    assert len(d2d_0) == 0
-    assert type(d2d_0) is type(d2d_10)
-
-    assert len(d2d_1) == 0
-    assert type(d2d_1) is type(d2d_10)
-
-
-@pytest.mark.skipif(not HAS_SCIPY, reason="No Scipy")
-def test_regression_6347_3d():
-    sc1 = SkyCoord([1, 2] * u.deg, [3, 4] * u.deg, [5, 6] * u.kpc)
-    sc2 = SkyCoord([1, 2] * u.deg, [3, 4] * u.deg, [5.1, 6.1] * u.kpc)
-    sc0 = sc1[:0]
-
-    idx1_10, idx2_10, d2d_10, d3d_10 = sc1.search_around_3d(sc2, 500 * u.pc)
-    idx1_1, idx2_1, d2d_1, d3d_1 = sc1.search_around_3d(sc2, 50 * u.pc)
-    idx1_0, idx2_0, d2d_0, d3d_0 = sc0.search_around_3d(sc2, 500 * u.pc)
-
-    assert len(d2d_10) > 0
-
-    assert len(d2d_0) == 0
-    assert type(d2d_0) is type(d2d_10)
-
-    assert len(d2d_1) == 0
-    assert type(d2d_1) is type(d2d_10)
 
 
 def test_gcrs_itrs_cartesian_repr():

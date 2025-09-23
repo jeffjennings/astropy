@@ -13,8 +13,8 @@ from numpy.testing import assert_allclose
 
 from astropy import constants as c
 from astropy import units as u
-from astropy.tests.helper import PYTEST_LT_8_0
-from astropy.units import utils
+from astropy.units import cds, utils
+from astropy.units.required_by_vounit import GsolLum, ksolMass, nsolRad
 from astropy.utils.compat.optional_deps import HAS_ARRAY_API_STRICT, HAS_DASK
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
@@ -148,6 +148,16 @@ def test_represents():
     assert blabla.decompose().bases == [u.s]
 
 
+@pytest.mark.parametrize("func", [u.Unit, u.def_unit])
+@pytest.mark.parametrize(
+    "represents, match_",
+    [("not_a_unit", "did not parse"), ([5, 6] * u.hr, "more than one element")],
+)
+def test_represents_errors(func, represents, match_):
+    with pytest.raises(ValueError, match=match_):
+        func("new_unit", represents)
+
+
 def test_units_conversion():
     assert_allclose(u.kpc.to(u.Mpc), 0.001)
     assert_allclose(u.Mpc.to(u.kpc), 1000)
@@ -268,20 +278,15 @@ def test_parse_strict_noncritical_error(parse_strict, expectation):
 
 
 def test_parse_strict_noncritical_error_default():
-    if PYTEST_LT_8_0:
-        # pytest < 8 does not know how to deal with `Exception.add_note`
-        match = (
-            r"^if 'm\(s\)' was meant to be a multiplication, it should have been "
-            r"written as 'm \(s\)'\.$"
-        )
-    else:
-        match = (
+    with pytest.raises(
+        ValueError,
+        match=(
             r"^if 'm\(s\)' was meant to be a multiplication, it should have been "
             r"written as 'm \(s\)'\.\n"
             "If you cannot change the unit string then try specifying the "
             r"'parse_strict' argument\.$"
-        )
-    with pytest.raises(ValueError, match=match):
+        ),
+    ):
         assert u.Unit("m(s)", format="ogip")
 
 
@@ -714,9 +719,49 @@ def test_pickle_unrecognized_unit():
     assert isinstance(pickle.loads(pickle.dumps(a)), u.UnrecognizedUnit)
 
 
-def test_duplicate_define():
-    with pytest.raises(ValueError):
-        u.def_unit("m", namespace=u.__dict__)
+@pytest.mark.parametrize(
+    "name,message",
+    [
+        pytest.param(
+            "h",
+            r"^the namespace already uses the name 'h' for Unit\(\"h\"\)$",
+            id="simple_conflict",
+        ),
+        pytest.param(
+            "ʰ",
+            (
+                "^the namespace already uses the NFKC normalized name 'h' for "
+                r'Unit\("h"\)'
+                "\n\nSee "
+                "https://docs.python.org/3/reference/lexical_analysis.html#identifiers "
+                r"for more information\.$"
+            ),
+            id="NFKC_normalization",
+        ),
+    ],
+)
+def test_duplicate_define(name, message):
+    namespace = {"h": u.h}
+    with pytest.raises(ValueError, match=message):
+        u.def_unit(name, u.hourangle, namespace=namespace)
+
+
+def test_unit_module_dunder_all_nfkc_normalization():
+    # Python applies NFKC normalization to identifiers, so inserting a name to __all__
+    # that changes with NFKC normalization can only cause trouble.
+    assert "ℓ" not in u.__all__
+    assert u.ℓ is u.liter
+
+
+@pytest.mark.parametrize(
+    "string",
+    [
+        pytest.param("°", id="invalid characters"),  # Regression test for #18606
+        pytest.param("as", id="keyword"),  # Regression test for #18614
+    ],
+)
+def test_unit_module_dunder_all_only_indentifiers(string):
+    assert string not in cds.__all__
 
 
 def test_all_units():
@@ -731,9 +776,23 @@ def test_repr_latex():
 
 
 def test_operations_with_strings():
-    assert u.m / "5s" == (u.m / (5.0 * u.s))
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=(
+            "^divisions involving a unit and a 'str' instance are deprecated since "
+            r"v7\.1\. Convert '5s' to a unit explicitly\.$"
+        ),
+    ):
+        assert u.m / "5s" == (u.m / (5.0 * u.s))
 
-    assert u.m * "5s" == (5.0 * u.m * u.s)
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=(
+            "^products involving a unit and a 'str' instance are deprecated since "
+            r"v7\.1\. Convert '5s' to a unit explicitly\.$"
+        ),
+    ):
+        assert u.m * "5s" == (5.0 * u.m * u.s)
 
 
 def test_comparison():
@@ -756,19 +815,29 @@ def test_compose_into_arbitrary_units():
 
 
 def test_unit_multiplication_with_string():
-    """Check that multiplication with strings produces the correct unit."""
-    u1 = u.cm
-    us = "kg"
-    assert us * u1 == u.Unit(us) * u1
-    assert u1 * us == u1 * u.Unit(us)
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=(
+            "^products involving a unit and a 'str' instance are deprecated since "
+            r"v7\.1\. Convert 'kg' to a unit explicitly\.$"
+        ),
+    ):
+        assert "kg" * u.cm == u.kg * u.cm
+    with pytest.warns(AstropyDeprecationWarning, match="^products involving .* 'str'"):
+        assert u.cm * "kg" == u.cm * u.kg
 
 
 def test_unit_division_by_string():
-    """Check that multiplication with strings produces the correct unit."""
-    u1 = u.cm
-    us = "kg"
-    assert us / u1 == u.Unit(us) / u1
-    assert u1 / us == u1 / u.Unit(us)
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=(
+            "^divisions involving a unit and a 'str' instance are deprecated since "
+            r"v7\.1\. Convert 'kg' to a unit explicitly\.$"
+        ),
+    ):
+        assert "kg" / u.cm == u.kg / u.cm
+    with pytest.warns(AstropyDeprecationWarning, match="^divisions involving .* 'str'"):
+        assert u.cm / "kg" == u.cm / u.kg
 
 
 def test_sorted_bases():
@@ -970,33 +1039,6 @@ def test_enable_unit_groupings():
         assert imperial.inch in u.m.find_equivalent_units()
 
 
-def test_unit_summary_prefixes():
-    """
-    Test for a few units that the unit summary table correctly reports
-    whether or not that unit supports prefixes.
-
-    Regression test for https://github.com/astropy/astropy/issues/3835
-    """
-
-    from astropy.units import astrophys
-
-    for summary in utils._iter_unit_summary(astrophys.__dict__):
-        unit, _, _, _, prefixes = summary
-
-        if unit.name == "lyr":
-            assert prefixes
-        elif unit.name == "pc":
-            assert prefixes
-        elif unit.name == "barn":
-            assert prefixes
-        elif unit.name == "cycle":
-            assert prefixes == "No"
-        elif unit.name == "spat":
-            assert prefixes == "No"
-        elif unit.name == "vox":
-            assert prefixes == "Yes"
-
-
 def test_raise_to_negative_power():
     """Test that order of bases is changed when raising to negative power.
 
@@ -1010,45 +1052,111 @@ def test_raise_to_negative_power():
 
 
 @pytest.mark.parametrize(
-    "name, symbol, multiplying_factor",
+    "name, factor",
     [
-        ("quetta", "Q", 1e30),
-        ("ronna", "R", 1e27),
-        ("yotta", "Y", 1e24),
-        ("zetta", "Z", 1e21),
-        ("exa", "E", 1e18),
-        ("peta", "P", 1e15),
-        ("tera", "T", 1e12),
-        ("giga", "G", 1e9),
-        ("mega", "M", 1e6),
-        ("kilo", "k", 1e3),
-        ("deca", "da", 1e1),
-        ("deci", "d", 1e-1),
-        ("centi", "c", 1e-2),
-        ("milli", "m", 1e-3),
-        ("micro", "u", 1e-6),
-        ("nano", "n", 1e-9),
-        ("pico", "p", 1e-12),
-        ("femto", "f", 1e-15),
-        ("atto", "a", 1e-18),
-        ("zepto", "z", 1e-21),
-        ("yocto", "y", 1e-24),
-        ("ronto", "r", 1e-27),
-        ("quecto", "q", 1e-30),
+        pytest.param(name, factor, id=name)
+        for name, factor in [
+            ("quetta", 1e30),
+            ("ronna", 1e27),
+            ("yotta", 1e24),
+            ("zetta", 1e21),
+            ("exa", 1e18),
+            ("peta", 1e15),
+            ("tera", 1e12),
+            ("giga", 1e9),
+            ("mega", 1e6),
+            ("kilo", 1e3),
+            ("deca", 1e1),
+            ("deka", 1e1),  # American spelling of deca
+            ("deci", 1e-1),
+            ("centi", 1e-2),
+            ("milli", 1e-3),
+            ("micro", 1e-6),
+            ("nano", 1e-9),
+            ("pico", 1e-12),
+            ("femto", 1e-15),
+            ("atto", 1e-18),
+            ("zepto", 1e-21),
+            ("yocto", 1e-24),
+            ("ronto", 1e-27),
+            ("quecto", 1e-30),
+        ]
     ],
 )
-def test_si_prefixes(name, symbol, multiplying_factor):
-    base = 1 * u.g
-
-    quantity_from_symbol = base.to(f"{symbol}g")
-    quantity_from_name = base.to(f"{name}gram")
-
+def test_si_prefix_names(name, factor):
+    base = 1 * u.s
+    quantity_from_name = base.to(f"{name}second")
     assert u.isclose(quantity_from_name, base)
+    assert np.isclose(base.value / quantity_from_name.value, factor, atol=0)
+
+
+@pytest.mark.parametrize(
+    "symbol, factor",
+    [
+        pytest.param(symbol, factor, id=symbol)
+        for symbol, factor in [
+            ("Q", 1e30),
+            ("R", 1e27),
+            ("Y", 1e24),
+            ("Z", 1e21),
+            ("E", 1e18),
+            ("P", 1e15),
+            ("T", 1e12),
+            ("G", 1e9),
+            ("M", 1e6),
+            ("k", 1e3),
+            ("da", 1e1),
+            ("d", 1e-1),
+            ("c", 1e-2),
+            ("m", 1e-3),
+            ("\N{MICRO SIGN}", 1e-6),
+            ("\N{GREEK SMALL LETTER MU}", 1e-6),
+            ("u", 1e-6),
+            ("n", 1e-9),
+            ("p", 1e-12),
+            ("f", 1e-15),
+            ("a", 1e-18),
+            ("z", 1e-21),
+            ("y", 1e-24),
+            ("r", 1e-27),
+            ("q", 1e-30),
+        ]
+    ],
+)
+def test_si_prefix_symbols(symbol, factor):
+    base = 1 * u.m
+    quantity_from_symbol = base.to(f"{symbol}m")
     assert u.isclose(quantity_from_symbol, base)
+    assert np.isclose(base.value / quantity_from_symbol.value, factor, atol=0)
 
-    value_ratio = base.value / quantity_from_symbol.value
 
-    assert u.isclose(value_ratio, multiplying_factor)
+@pytest.mark.parametrize(
+    "name,symbol,factor",
+    [
+        pytest.param(name, symbol, factor, id=name)
+        for name, symbol, factor in [
+            ("kibi", "Ki", 2**10),
+            ("mebi", "Mi", 2**20),
+            ("gibi", "Gi", 2**30),
+            ("tebi", "Ti", 2**40),
+            ("pebi", "Pi", 2**50),
+            ("exbi", "Ei", 2**60),
+            # We now switch to float factors because with numpy < 2.0
+            # np.isclose() doesn't like ints this large
+            ("zebi", "Zi", 2.0**70),
+            ("yobi", "Yi", 2.0**80),
+        ]
+    ],
+)
+def test_si_binary_prefixes(name, symbol, factor):
+    base = 1 * u.byte
+    quantity_from_name = base.to(f"{name}byte")
+    assert u.isclose(quantity_from_name, base)
+    assert np.isclose(base.value / quantity_from_name.value, factor, atol=0)
+
+    quantity_from_symbol = base.to(f"{symbol}B")
+    assert u.isclose(quantity_from_symbol, base)
+    assert np.isclose(base.value / quantity_from_symbol.value, factor, atol=0)
 
 
 def test_cm_uniqueness():
@@ -1156,3 +1264,29 @@ def test_dimensionless_scale_factor_types(scale):
     # Regression test for #17355 - Unit did not accept all scale factor
     # types that CompositeUnit accepted
     assert u.Unit(scale) == u.CompositeUnit(scale, [], [])
+
+
+# No need to test everything defined in required_by_vounit, the following few are
+# representative enough.
+required_by_vounit_parametrization = pytest.mark.parametrize(
+    "unit", [GsolLum, ksolMass, nsolRad], ids=lambda x: x.name
+)
+
+
+@required_by_vounit_parametrization
+def test_required_by_vounit_not_in_main_namespace(unit):
+    with pytest.raises(
+        AttributeError,
+        match=rf"^module 'astropy\.units' has no attribute '{unit.name}'$",
+    ):
+        getattr(u, unit.name)
+
+
+@required_by_vounit_parametrization
+def test_required_by_vounit_parsing(unit):
+    assert u.Unit(unit.name) is unit
+
+
+@required_by_vounit_parametrization
+def test_required_by_vounit_not_in_find_equivalent_units(unit):
+    assert unit not in unit.represents.bases[0].find_equivalent_units()

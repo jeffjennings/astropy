@@ -1,25 +1,24 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-from __future__ import annotations
-
 import warnings
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import ClassVar, Literal, assert_never
 
-from astropy.units.errors import UnitsWarning
+import numpy as np
+
+from astropy.extern.ply.lex import LexToken
+from astropy.units.core import (
+    CompositeUnit,
+    NamedUnit,
+    Unit,
+    UnitBase,
+    get_current_unit_registry,
+)
+from astropy.units.enums import DeprecatedUnitAction
+from astropy.units.errors import UnitsError, UnitsWarning
+from astropy.units.typing import UnitPower, UnitScale
 from astropy.units.utils import maybe_simple_fraction
 from astropy.utils.misc import did_you_mean
-
-from . import core
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
-    from typing import ClassVar, Literal
-
-    import numpy as np
-
-    from astropy.extern.ply.lex import LexToken
-    from astropy.units import NamedUnit, UnitBase
-    from astropy.units.typing import UnitPower, UnitScale
 
 
 class Base:
@@ -27,7 +26,7 @@ class Base:
     The abstract base class of all unit formats.
     """
 
-    registry: ClassVar[dict[str, type[Base]]] = {}
+    registry: ClassVar[dict[str, type["Base"]]] = {}
     _space: ClassVar[str] = " "
     _scale_unit_separator: ClassVar[str] = " "
     _times: ClassVar[str] = "*"
@@ -137,7 +136,11 @@ class Base:
 
     @classmethod
     def to_string(
-        cls, unit: UnitBase, *, fraction: bool | Literal["inline", "multiline"] = True
+        cls,
+        unit: UnitBase,
+        *,
+        deprecations: DeprecatedUnitAction = DeprecatedUnitAction.WARN,
+        fraction: bool | Literal["inline", "multiline"] = True,
     ) -> str:
         """Convert a unit to its string representation.
 
@@ -147,6 +150,10 @@ class Base:
         ----------
         unit : |Unit|
             The unit to convert.
+        deprecations : {"warn", "silent", "raise", "convert"}, optional, keyword-only
+            Whether deprecated units should emit a warning, be handled
+            silently or raise an error. The "convert" option replaces
+            the deprecated unit if possible and emits a warning otherwise.
         fraction : {False|True|'inline'|'multiline'}, optional
             Options are as follows:
 
@@ -165,7 +172,7 @@ class Base:
         # First the scale.  Normally unity, in which case we omit
         # it, but non-unity scale can happen, e.g., in decompositions
         # like u.Ry.decompose(), which gives "2.17987e-18 kg m2 / s2".
-        s = "" if unit.scale == 1 else cls.format_exponential_notation(unit.scale)
+        s = "" if unit.scale == 1.0 else cls.format_exponential_notation(unit.scale)
 
         # dimensionless does not have any bases, but can have a scale;
         # e.g., u.percent.decompose() gives "0.01".
@@ -223,26 +230,17 @@ class _ParsingFormatMixin:
                 raise ValueError(f"Syntax error parsing unit '{s}'")
 
     @classmethod
-    def _parse_unit(cls, unit: str, detailed_exception: bool = True) -> UnitBase:
-        cls._validate_unit(unit, detailed_exception=detailed_exception)
-        return cls._units[unit]
-
-    @classmethod
     def _get_unit(cls, t: LexToken) -> UnitBase:
         try:
-            return cls._parse_unit(t.value)
-        except ValueError as e:
-            registry = core.get_current_unit_registry()
+            return cls._validate_unit(t.value)
+        except KeyError:
+            registry = get_current_unit_registry()
             if t.value in registry.aliases:
                 return registry.aliases[t.value]
 
-            raise ValueError(f"At col {t.lexpos}, {str(e)}")
-
-    @classmethod
-    def _get_unit_name(cls, unit: NamedUnit) -> str:
-        name = unit._get_format_name(cls.name)
-        cls._validate_unit(name)
-        return name
+            raise ValueError(
+                f"At col {t.lexpos}, {cls._invalid_unit_error_message(t.value)}"
+            ) from None
 
     @classmethod
     def _fix_deprecated(cls, x: str) -> list[str]:
@@ -267,13 +265,34 @@ class _ParsingFormatMixin:
         return did_you_mean(unit, cls._units, fix=cls._fix_deprecated)
 
     @classmethod
-    def _validate_unit(cls, unit: str, detailed_exception: bool = True) -> None:
-        if unit not in cls._units:
-            if detailed_exception:
-                raise ValueError(cls._invalid_unit_error_message(unit))
-            raise ValueError()
-        if unit in cls._deprecated_units:
-            warnings.warn(cls._deprecated_unit_warning_message(unit), UnitsWarning)
+    def _validate_unit(
+        cls, s: str, deprecations: DeprecatedUnitAction = DeprecatedUnitAction.WARN
+    ) -> UnitBase:
+        if s in cls._deprecated_units:
+            alternative = (
+                unit.represents if isinstance(unit := cls._units[s], Unit) else None
+            )
+            msg = f"The unit {s!r} has been deprecated in the {cls.__name__} standard."
+            if alternative:
+                msg += f" Suggested: {cls.to_string(alternative)}."
+
+            match DeprecatedUnitAction(deprecations):
+                case DeprecatedUnitAction.CONVERT:
+                    if alternative:
+                        return alternative
+                    warnings.warn(
+                        msg + " It cannot be automatically converted.", UnitsWarning
+                    )
+                case DeprecatedUnitAction.WARN:
+                    warnings.warn(msg, UnitsWarning)
+                case DeprecatedUnitAction.RAISE:
+                    raise UnitsError(msg)
+                case DeprecatedUnitAction.SILENT:
+                    pass
+                case _:
+                    assert_never(deprecations)
+
+        return cls._units[s]
 
     @classmethod
     def _invalid_unit_error_message(cls, unit: str) -> str:
@@ -283,32 +302,33 @@ class _ParsingFormatMixin:
         )
 
     @classmethod
-    def _deprecated_unit_warning_message(cls, unit: str) -> str:
-        return f"The unit '{unit}' has been deprecated in the {cls.__name__} standard."
-
-    @classmethod
     def _decompose_to_known_units(
-        cls, unit: core.CompositeUnit | core.NamedUnit
+        cls,
+        unit: CompositeUnit | NamedUnit,
+        deprecations: DeprecatedUnitAction = DeprecatedUnitAction.WARN,
     ) -> UnitBase:
         """
         Partially decomposes a unit so it is only composed of units that
         are "known" to a given format.
         """
-        if isinstance(unit, core.CompositeUnit):
-            return core.CompositeUnit(
+        if isinstance(unit, CompositeUnit):
+            return CompositeUnit(
                 unit.scale,
-                [cls._decompose_to_known_units(base) for base in unit.bases],
+                [
+                    cls._decompose_to_known_units(base, deprecations)
+                    for base in unit.bases
+                ],
                 unit.powers,
                 _error_check=False,
             )
-        if isinstance(unit, core.NamedUnit):
+        if isinstance(unit, NamedUnit):
+            name = unit._get_format_name(cls.name)
             try:
-                cls._get_unit_name(unit)
-            except ValueError:
-                if isinstance(unit, core.Unit):
-                    return cls._decompose_to_known_units(unit._represents)
-                raise
-            return unit
+                return cls._validate_unit(name, deprecations=deprecations)
+            except KeyError:
+                if isinstance(unit, Unit):
+                    return cls._decompose_to_known_units(unit._represents, deprecations)
+                raise ValueError(cls._invalid_unit_error_message(name)) from None
         raise TypeError(
             f"unit argument must be a 'NamedUnit' or 'CompositeUnit', not {type(unit)}"
         )

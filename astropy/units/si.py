@@ -8,7 +8,8 @@ This package defines the SI units.  They are also available in
 
 import numpy as np
 
-from .core import CompositeUnit, UnitBase, def_unit
+from .core import CompositeUnit, def_unit
+from .docgen import generate_dunder_all, generate_unit_summary
 
 __all__: list[str] = []  #  Units are added at the end
 
@@ -54,7 +55,7 @@ def_unit(
     format={"latex": r"\mu m", "unicode": "\N{MICRO SIGN}m"},
 )
 def_unit(
-    ["Angstrom", "AA", "angstrom"],
+    ["Angstrom", "AA", "angstrom", "Å"],
     0.1 * nm,
     namespace=_ns,
     doc="ångström: 10 ** -10 m",
@@ -84,11 +85,10 @@ def_unit(
 # VOLUMES
 
 def_unit(
-    (["l", "L"], ["liter"]),
+    (["l", "L", "ℓ"], ["liter"]),
     1000 * cm**3.0,
     namespace=_ns,
     prefixes=True,
-    format={"latex": r"\mathcal{l}", "unicode": "ℓ"},
     doc="liter: metric unit of volume",
 )
 
@@ -145,7 +145,7 @@ def_unit(
     doc="milli arc second: angular measurement",
 )
 def_unit(
-    ["uas"],
+    ["uas", "\N{MICRO SIGN}as", "\N{GREEK SMALL LETTER MU}as"],
     0.000001 * arcsec,
     namespace=_ns,
     doc="micro arc second: angular measurement",
@@ -363,7 +363,7 @@ def_unit(
     doc="Volt: electric potential or electromotive force",
 )
 def_unit(
-    (["Ohm", "ohm"], ["Ohm"]),
+    (["Ohm", "ohm", "Ω"], ["Ohm"]),
     V * A**-1,
     namespace=_ns,
     prefixes=True,
@@ -478,11 +478,9 @@ bases = {m, s, kg, A, cd, rad, K, mol}
 ###########################################################################
 # ALL & DOCSTRING
 
-__all__ += [n for n, v in _ns.items() if isinstance(v, UnitBase)]
+__all__ += generate_dunder_all(globals())  # noqa: PLE0605
 
 if __doc__ is not None:
     # This generates a docstring for this module that describes all of the
     # standard units defined here.
-    from .utils import generate_unit_summary as _generate_unit_summary
-
-    __doc__ += _generate_unit_summary(globals())
+    __doc__ += generate_unit_summary(globals())

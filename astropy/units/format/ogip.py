@@ -16,28 +16,23 @@ FITS files
 <https://heasarc.gsfc.nasa.gov/docs/heasarc/ofwg/docs/general/ogip_93_001/>`__.
 """
 
-from __future__ import annotations
-
 import math
 import warnings
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import ClassVar, Literal
 
+import numpy as np
+
+from astropy.extern.ply.lex import Lexer
+from astropy.units.core import CompositeUnit, UnitBase
+from astropy.units.enums import DeprecatedUnitAction
 from astropy.units.errors import UnitParserWarning, UnitsWarning
+from astropy.units.typing import UnitScale
 from astropy.utils import classproperty, parsing
+from astropy.utils.parsing import ThreadSafeParser
 
-from . import core, utils
+from . import utils
 from .base import Base, _ParsingFormatMixin
-
-if TYPE_CHECKING:
-    from typing import ClassVar, Literal
-
-    import numpy as np
-
-    from astropy.extern.ply.lex import Lexer
-    from astropy.units import UnitBase
-    from astropy.units.typing import UnitScale
-    from astropy.utils.parsing import ThreadSafeParser
 
 
 class OGIP(Base, _ParsingFormatMixin):
@@ -173,9 +168,7 @@ class OGIP(Base, _ParsingFormatMixin):
             """
             match p[1:]:
                 case (factor, unit) | (factor, _, unit):
-                    p[0] = core.CompositeUnit(
-                        factor * unit.scale, unit.bases, unit.powers
-                    )
+                    p[0] = CompositeUnit(factor * unit.scale, unit.bases, unit.powers)
                 case _:
                     p[0] = p[1]
 
@@ -345,12 +338,15 @@ class OGIP(Base, _ParsingFormatMixin):
 
     @classmethod
     def to_string(
-        cls, unit: UnitBase, fraction: bool | Literal["inline", "multiline"] = "inline"
+        cls,
+        unit: UnitBase,
+        fraction: bool | Literal["inline", "multiline"] = "inline",
+        deprecations: DeprecatedUnitAction = DeprecatedUnitAction.WARN,
     ) -> str:
         # Remove units that aren't known to the format
-        unit = cls._decompose_to_known_units(unit)
+        unit = cls._decompose_to_known_units(unit, deprecations)
 
-        if isinstance(unit, core.CompositeUnit):
+        if isinstance(unit, CompositeUnit):
             # Can't use np.log10 here, because p[0] may be a Python long.
             if math.log10(unit.scale) % 1.0 != 0.0:
                 warnings.warn(

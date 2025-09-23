@@ -14,7 +14,7 @@ from astropy.io.fits.util import (
     _pseudo_zero,
 )
 from astropy.io.fits.verify import VerifyWarning
-from astropy.utils import isiterable, lazyproperty
+from astropy.utils import lazyproperty
 
 from .base import BITPIX2DTYPE, DELAYED, DTYPE2BITPIX, ExtensionHDU, _ValidHDU
 
@@ -53,8 +53,6 @@ class _ImageBaseHDU(_ValidHDU):
         ignore_blank=False,
         **kwargs,
     ):
-        from .groups import GroupsHDU
-
         super().__init__(data=data, header=header)
 
         if data is DELAYED:
@@ -67,6 +65,8 @@ class _ImageBaseHDU(_ValidHDU):
             # TODO: Some of this card manipulation should go into the
             # PrimaryHDU and GroupsHDU subclasses
             # construct a list of cards of minimal header
+            from .groups import GroupsHDU
+
             if isinstance(self, ExtensionHDU):
                 c0 = ("XTENSION", "IMAGE", self.standard_keyword_comments["XTENSION"])
             else:
@@ -84,17 +84,12 @@ class _ImageBaseHDU(_ValidHDU):
                 cards.append(("PCOUNT", 0, self.standard_keyword_comments["PCOUNT"]))
                 cards.append(("GCOUNT", 1, self.standard_keyword_comments["GCOUNT"]))
 
+            new_header = Header(cards)
             if header is not None:
-                orig = header.copy()
-                header = Header(cards)
-                header.extend(orig, strip=True, update=True, end=True)
-            else:
-                header = Header(cards)
-
-            self._header = header
+                new_header.extend(header.copy(), strip=True, update=True, end=True)
+            self._header = new_header
 
         self._do_not_scale_image_data = do_not_scale_image_data
-
         self._uint = uint
         self._scale_back = scale_back
 
@@ -388,38 +383,17 @@ class _ImageBaseHDU(_ValidHDU):
 
         self._modified = False
 
-    def _update_header_scale_info(self, dtype=None):
+    def _update_header_scale_info(self, dtype):
         """
-        Delete BSCALE/BZERO from header if necessary.
+        Delete BSCALE/BZERO from header if necessary, i.e. if data has been
+        scaled or replaced by another dtype.
         """
-        # Note that _dtype_for_bitpix determines the dtype based on the
-        # "original" values of bitpix, bscale, and bzero, stored in
-        # self._orig_bitpix, etc. It contains the logic for determining which
-        # special cases of BZERO/BSCALE, if any, are auto-detected as following
-        # the FITS unsigned int convention.
-
-        # Added original_was_unsigned with the intent of facilitating the
-        # special case of do_not_scale_image_data=True and uint=True
-        # eventually.
-        # FIXME: unused, maybe it should be useful?
-        # if self._dtype_for_bitpix() is not None:
-        #     original_was_unsigned = self._dtype_for_bitpix().kind == 'u'
-        # else:
-        #     original_was_unsigned = False
-
         if self._do_not_scale_image_data or (
             self._orig_bzero == 0 and self._orig_bscale == 1
         ):
             return
 
-        if dtype is None:
-            dtype = self._dtype_for_bitpix()
-
-        if (
-            dtype is not None
-            and dtype.kind == "u"
-            and (self._scale_back or self._scale_back is None)
-        ):
+        if dtype.kind == "u" and (self._scale_back or self._scale_back is None):
             # Data is pseudo-unsigned integers, and the scale_back option
             # was not explicitly set to False, so preserve all the scale
             # factors
@@ -435,15 +409,26 @@ class _ImageBaseHDU(_ValidHDU):
             except KeyError:
                 pass
 
-        if dtype is None:
-            dtype = self._dtype_for_bitpix()
-        if dtype is not None:
-            self._header["BITPIX"] = DTYPE2BITPIX[dtype.name]
-
+        self._bitpix = self._header["BITPIX"] = DTYPE2BITPIX[dtype.name]
         self._bzero = 0
         self._bscale = 1
-        self._bitpix = self._header["BITPIX"]
         self._blank = self._header.pop("BLANK", None)
+
+    def _update_pseudo_int_scale_keywords(self):
+        """
+        If the data is signed int 8, unsigned int 16, 32, or 64,
+        add BSCALE/BZERO cards to header.
+        """
+        if self._has_data and self._standard and _is_pseudo_integer(self.data.dtype):
+            # CompImageHDUs need TFIELDS immediately after GCOUNT,
+            # so BSCALE has to go after TFIELDS if it exists.
+            if "TFIELDS" in self._header:
+                self._header.set("BSCALE", 1, after="TFIELDS")
+            elif "GCOUNT" in self._header:
+                self._header.set("BSCALE", 1, after="GCOUNT")
+            else:
+                self._header.set("BSCALE", 1)
+            self._header.set("BZERO", _pseudo_zero(self.data.dtype), after="BSCALE")
 
     def scale(self, type=None, option="old", bscale=None, bzero=None):
         """
@@ -624,7 +609,7 @@ class _ImageBaseHDU(_ValidHDU):
         for msg in messages:
             warnings.warn(msg, VerifyWarning)
 
-    def _prewriteto(self, checksum=False, inplace=False):
+    def _prewriteto(self, inplace=False):
         if self._scale_back:
             self._scale_internal(
                 BITPIX2DTYPE[self._orig_bitpix], blank=self._orig_blank
@@ -636,7 +621,9 @@ class _ImageBaseHDU(_ValidHDU):
             # with the correct post-rescaling headers
             _ = self.data
 
-        return super()._prewriteto(checksum, inplace)
+        self._update_pseudo_int_scale_keywords()
+
+        return super()._prewriteto(inplace)
 
     def _writedata_internal(self, fileobj):
         size = 0
@@ -752,6 +739,12 @@ class _ImageBaseHDU(_ValidHDU):
         Determine the dtype that the data should be converted to depending on
         the BITPIX value in the header, and possibly on the BSCALE value as
         well.  Returns None if there should not be any change.
+
+        Note that _dtype_for_bitpix determines the dtype based on the
+        "original" values of bitpix, bscale, and bzero, stored in
+        self._orig_bitpix, etc. It contains the logic for determining which
+        special cases of BZERO/BSCALE, if any, are auto-detected as following
+        the FITS unsigned int convention.
         """
         bitpix = self._orig_bitpix
         # Handle possible conversion to uints if enabled
@@ -804,7 +797,7 @@ class _ImageBaseHDU(_ValidHDU):
         code = BITPIX2DTYPE[self._orig_bitpix]
 
         raw_data = self._get_raw_data(shape, code, offset)
-        raw_data.dtype = raw_data.dtype.newbyteorder(">")
+        raw_data = raw_data.view(raw_data.dtype.newbyteorder(">"))
 
         return self._scale_data(raw_data)
 
@@ -929,12 +922,12 @@ class _ImageBaseHDU(_ValidHDU):
                 if d.flags.writeable:
                     byteswapped = True
                     d = d.byteswap(True)
-                    d.dtype = d.dtype.newbyteorder(">")
+                    d = d.view(d.dtype.newbyteorder(">"))
                 else:
                     # If the data is not writeable, we just make a byteswapped
                     # copy and don't bother changing it back after
                     d = d.byteswap(False)
-                    d.dtype = d.dtype.newbyteorder(">")
+                    d = d.view(d.dtype.newbyteorder(">"))
                     byteswapped = False
             else:
                 byteswapped = False
@@ -945,7 +938,7 @@ class _ImageBaseHDU(_ValidHDU):
             # its original little-endian order.
             if byteswapped and not _is_pseudo_integer(self.data.dtype):
                 d.byteswap(True)
-                d.dtype = d.dtype.newbyteorder("<")
+                d = d.view(d.dtype.newbyteorder("<"))
 
             return cs
         else:
@@ -978,6 +971,17 @@ class Section:
         # Implementing `.shape` enables `astropy.nddata.Cutout2D` to accept
         # `ImageHDU.section` in place of `.data`.
         return self.hdu.shape
+
+    @property
+    def dtype(self):
+        # Implementing `.dtype` enables `astropy.nddata.Cutout2D` to accept
+        # `ImageHDU.section` in place of `.data`.
+        if not self.hdu._do_not_scale_image_data and (
+            self.hdu._orig_bscale != 1 or self.hdu._orig_bzero != 0
+        ):
+            return self.hdu._dtype_for_bitpix()
+        else:
+            return np.dtype(BITPIX2DTYPE[self.hdu._bitpix])
 
     def __getitem__(self, key):
         """Returns a slice of HDU data specified by `key`.
@@ -1012,18 +1016,18 @@ class Section:
         # Find all leading axes for which a single point is used.
         for idx in range(naxis):
             axis = self.hdu.shape[idx]
-            indx = _IndexInfo(key[idx], axis)
-            offset = offset * axis + indx.offset
+            index = _IndexInfo(key[idx], axis)
+            offset = offset * axis + index.offset
             if not _is_int(key[idx]):
-                dims.append(indx.npts)
+                dims.append(index.npts)
                 break
 
-        is_contiguous = indx.contiguous
+        is_contiguous = index.contiguous
         for jdx in range(idx + 1, naxis):
             axis = self.hdu.shape[jdx]
-            indx = _IndexInfo(key[jdx], axis)
-            dims.append(indx.npts)
-            if indx.npts == axis and indx.contiguous:
+            index = _IndexInfo(key[jdx], axis)
+            dims.append(index.npts)
+            if index.npts == axis and index.contiguous:
                 # The offset needs to multiply the length of all remaining axes
                 offset *= axis
             else:
@@ -1051,7 +1055,7 @@ class Section:
                 ks = range(*key.indices(axis))
                 break
 
-            if isiterable(key):
+            if np.iterable(key):
                 # Handle both integer and boolean arrays.
                 ks = np.arange(axis, dtype=int)[key]
                 break
@@ -1059,7 +1063,7 @@ class Section:
 
         data = [self[keys[:idx] + (k,) + keys[idx + 1 :]] for k in ks]
 
-        if any(isinstance(key, slice) or isiterable(key) for key in keys[idx + 1 :]):
+        if any(isinstance(key, slice) or np.iterable(key) for key in keys[idx + 1 :]):
             # data contains multidimensional arrays; combine them.
             return np.array(data)
         else:
@@ -1269,24 +1273,24 @@ class ImageHDU(_ImageBaseHDU, ExtensionHDU):
 
 
 class _IndexInfo:
-    def __init__(self, indx, naxis):
-        if _is_int(indx):
-            if indx < 0:  # support negative indexing
-                indx = indx + naxis
-            if 0 <= indx < naxis:
+    def __init__(self, index, naxis):
+        if _is_int(index):
+            if index < 0:  # support negative indexing
+                index = index + naxis
+            if 0 <= index < naxis:
                 self.npts = 1
-                self.offset = indx
+                self.offset = index
                 self.contiguous = True
             else:
-                raise IndexError(f"Index {indx} out of range.")
-        elif isinstance(indx, slice):
-            start, stop, step = indx.indices(naxis)
+                raise IndexError(f"Index {index} out of range.")
+        elif isinstance(index, slice):
+            start, stop, step = index.indices(naxis)
             self.npts = (stop - start) // step
             self.offset = start
             self.contiguous = step == 1
-        elif isiterable(indx):
-            self.npts = len(indx)
+        elif np.iterable(index):
+            self.npts = len(index)
             self.offset = 0
             self.contiguous = False
         else:
-            raise IndexError(f"Illegal index {indx}")
+            raise IndexError(f"Illegal index {index}")

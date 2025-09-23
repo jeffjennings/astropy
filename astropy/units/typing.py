@@ -1,25 +1,34 @@
 """Typing module for supporting type annotations related to :mod:`~astropy.units`."""
 
-from __future__ import annotations
-
-__all__ = ["QuantityLike"]
+__all__ = [
+    "QuantityLike",
+    "UnitLike",
+    "UnitPower",
+    "UnitPowerLike",
+    "UnitScale",
+    "UnitScaleLike",
+]
 
 
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias, Union
 
 import numpy as np
 import numpy.typing as npt
 
-from astropy.units import Quantity
-
 if TYPE_CHECKING:
-    from typing import TypeAlias
+    import astropy.units
+
+UnitLike: TypeAlias = Union["astropy.units.UnitBase", str, "astropy.units.Quantity"]
+"""Type alias for input that can be converted to a Unit.
+
+See :term:`unit-like`. Note that this includes only scalar quantities.
+"""
 
 # Note: Quantity is technically covered by npt.ArrayLike, but we want to
 # explicitly include it here so that it is clear that we are also including
 # Quantity objects in the definition of QuantityLike.
-QuantityLike: TypeAlias = Quantity | npt.ArrayLike
+QuantityLike: TypeAlias = Union["astropy.units.Quantity", npt.ArrayLike]
 """Type alias for a quantity-like object.
 
 This is an object that can be converted to a :class:`~astropy.units.Quantity` object
@@ -68,12 +77,15 @@ For more examples see the :mod:`numpy.typing` definition of
 """
 
 
-# The classes from the standard library `numbers` module are not suitable for
-# type checking (https://github.com/python/mypy/issues/3186). For now we define
-# our own number types, but if a good definition becomes available upstream
-# then we should switch to that.
-Real: TypeAlias = int | float | Fraction | np.integer | np.floating
-Complex: TypeAlias = Real | complex | np.complexfloating
-
 UnitPower: TypeAlias = int | float | Fraction
-UnitScale: TypeAlias = int | float | Fraction | complex
+"""Alias for types that can be powers of the components of a
+`~astropy.units.UnitBase` instance"""
+UnitPowerLike: TypeAlias = UnitPower | np.integer | np.floating
+"""Alias for types that can be used to create powers of the components of a
+`~astropy.units.UnitBase` instance"""
+UnitScale: TypeAlias = float | complex
+"Alias for types that can be scale factors of a `~astropy.units.CompositeUnit`"
+UnitScaleLike: TypeAlias = UnitScale | int | Fraction | np.number
+"""Alias for types that can be used to create scale factors of a
+`~astropy.units.CompositeUnit`"""
+PhysicalTypeID: TypeAlias = tuple[tuple[str, UnitPower], ...]

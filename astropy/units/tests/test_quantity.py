@@ -14,9 +14,8 @@ from numpy.testing import assert_allclose, assert_array_almost_equal, assert_arr
 
 from astropy import units as u
 from astropy.units.quantity import _UNIT_NOT_INITIALISED
-from astropy.utils import isiterable
 from astropy.utils.compat import COPY_IF_NEEDED
-from astropy.utils.exceptions import AstropyWarning
+from astropy.utils.exceptions import AstropyDeprecationWarning, AstropyWarning
 from astropy.utils.masked import Masked
 
 """ The Quantity class will represent a number + unit + uncertainty """
@@ -1432,6 +1431,8 @@ class TestQuantityDisplay:
     @pytest.mark.parametrize(
         "q, expected",
         [
+            pytest.param(0 * u.imperial.deg_R, r"$0\mathrm{{}^{\circ}R}$", id="deg_R"),
+            pytest.param(5 * u.imperial.deg_F, r"$5\mathrm{{}^{\circ}F}$", id="deg_F"),
             pytest.param(10 * u.deg_C, r"$10\mathrm{{}^{\circ}C}$", id="deg_C"),
             pytest.param(20 * u.deg, r"$20\mathrm{{}^{\circ}}$", id="deg"),
             pytest.param(30 * u.arcmin, r"$30\mathrm{{}^{\prime}}$", id="arcmin"),
@@ -1608,16 +1609,33 @@ def test_quantity_initialized_with_quantity():
 
 
 def test_quantity_string_unit():
-    q1 = 1.0 * u.m / "s"
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=(
+            "^divisions involving a unit and a 'str' instance are deprecated since "
+            r"v7\.1\. Convert 's' to a unit explicitly\.$"
+        ),
+    ):
+        q1 = 1.0 * u.m / "s"
     assert q1.value == 1
     assert q1.unit == (u.m / u.s)
 
-    q2 = q1 * "m"
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=(
+            "^products involving a unit and a 'str' instance are deprecated since "
+            r"v7\.1\. Convert 'm' to a unit explicitly\.$"
+        ),
+    ):
+        q2 = q1 * "m"
     assert q2.unit == ((u.m * u.m) / u.s)
 
 
 def test_quantity_invalid_unit_string():
-    with pytest.raises(ValueError):
+    with (
+        pytest.raises(ValueError),
+        pytest.warns(AstropyDeprecationWarning, match="^products involving .* a 'str'"),
+    ):
         "foo" * u.m
 
 
@@ -1658,11 +1676,11 @@ def test_quantity_iterability():
     """
 
     q1 = [15.0, 17.0] * u.m
-    assert isiterable(q1)
+    assert np.iterable(q1)
 
     q2 = next(iter(q1))
     assert q2 == 15.0 * u.m
-    assert not isiterable(q2)
+    assert not np.iterable(q2)
     pytest.raises(TypeError, iter, q2)
 
 

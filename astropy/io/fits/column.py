@@ -16,7 +16,7 @@ from textwrap import indent
 import numpy as np
 from numpy import char as chararray
 
-from astropy.utils import isiterable, lazyproperty
+from astropy.utils import lazyproperty
 from astropy.utils.exceptions import AstropyUserWarning
 
 from .card import CARD_LENGTH, Card
@@ -1493,7 +1493,7 @@ class ColDefs(NotifierMixin):
         elif isinstance(input, np.ndarray) and input.dtype.fields is not None:
             # Construct columns from the fields of a record array
             self._init_from_array(input)
-        elif isiterable(input):
+        elif np.iterable(input):
             # if the input is a list of Columns
             self._init_from_sequence(input)
         elif isinstance(input, _TableBaseHDU):
@@ -1794,11 +1794,7 @@ class ColDefs(NotifierMixin):
         if not isinstance(other, (list, tuple)):
             other = [other]
         _other = [_get_index(self.names, key) for key in other]
-        indx = list(range(len(self)))
-        for x in _other:
-            indx.remove(x)
-        tmp = [self[i] for i in indx]
-        return ColDefs(tmp)
+        return ColDefs([self[i] for i in range(len(self)) if i not in _other])
 
     def _update_column_attribute_changed(self, column, attr, old_value, new_value):
         """
@@ -1862,10 +1858,10 @@ class ColDefs(NotifierMixin):
         # Ask the HDU object to load the data before we modify our columns
         self._notify("load_data")
 
-        indx = _get_index(self.names, col_name)
-        col = self.columns[indx]
+        index = _get_index(self.names, col_name)
+        col = self.columns[index]
 
-        del self._arrays[indx]
+        del self._arrays[index]
         # Obliterate caches of certain things
         del self.dtype
         del self._recformats
@@ -1873,7 +1869,7 @@ class ColDefs(NotifierMixin):
         del self.names
         del self.formats
 
-        del self.columns[indx]
+        del self.columns[index]
 
         col._remove_listener(self)
 
@@ -1881,7 +1877,7 @@ class ColDefs(NotifierMixin):
         # any other listeners) that the column has been removed
         # Just send a reference to self, and the index of the column that was
         # removed
-        self._notify("column_removed", self, indx)
+        self._notify("column_removed", self, index)
         return self
 
     def change_attrib(self, col_name, attrib, new_value):
@@ -2139,26 +2135,20 @@ def _get_index(names, key):
         field('Xyz'), etc. will get this field.
     """
     if _is_int(key):
-        indx = int(key)
-    elif isinstance(key, str):
-        # try to find exact match first
-        try:
-            indx = names.index(key.rstrip())
-        except ValueError:
-            # try to match case-insentively,
-            _key = key.lower().rstrip()
-            names = [n.lower().rstrip() for n in names]
-            count = names.count(_key)  # occurrence of _key in names
-            if count == 1:
-                indx = names.index(_key)
-            elif count == 0:
-                raise KeyError(f"Key '{key}' does not exist.")
-            else:  # multiple match
-                raise KeyError(f"Ambiguous key name '{key}'.")
-    else:
+        return int(key)
+    if not isinstance(key, str):
         raise KeyError(f"Illegal key '{key!r}'.")
-
-    return indx
+    try:  # try to find exact match first
+        return names.index(key.rstrip())
+    except ValueError:  # try to match case-insentively,
+        _key = key.lower().rstrip()
+        names = [n.lower().rstrip() for n in names]
+        count = names.count(_key)  # occurrence of _key in names
+        if count == 1:
+            return names.index(_key)
+        if count == 0:
+            raise KeyError(f"Key '{key}' does not exist.")
+        raise KeyError(f"Ambiguous key name '{key}'.")  # multiple match
 
 
 def _unwrapx(input, output, repeat):

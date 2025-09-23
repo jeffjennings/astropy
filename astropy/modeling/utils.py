@@ -8,9 +8,12 @@ import warnings
 
 # pylint: disable=invalid-name
 from collections import UserDict
+from collections.abc import Sequence
 from inspect import signature
+from typing import TypeVar, overload
 
 import numpy as np
+from numpy.typing import NDArray
 
 from astropy import units as u
 
@@ -314,3 +317,27 @@ class _SpecialOperatorsDict(UserDict):
         self._set_value(key, operator)
 
         return key
+
+
+DType = TypeVar("DType", bound=np.generic)
+
+
+@overload
+def quantity_asanyarray(a: Sequence[int]) -> NDArray[np.integer]: ...
+@overload
+def quantity_asanyarray(a: Sequence[int], dtype: DType) -> NDArray[DType]: ...
+@overload
+def quantity_asanyarray(a: Sequence[u.Quantity]) -> u.Quantity: ...
+def quantity_asanyarray(
+    a: Sequence[int] | Sequence[u.Quantity], dtype: DType | None = None
+) -> NDArray[np.integer] | NDArray[DType] | u.Quantity:
+    if (
+        not isinstance(a, np.ndarray)
+        and not np.isscalar(a)
+        and any(isinstance(x, u.Quantity) for x in a)
+    ):
+        return u.Quantity(a, dtype=dtype)
+    else:
+        # skip over some dtype deprecation.
+        dtype = np.float64 if dtype is np.inexact else dtype
+        return np.asanyarray(a, dtype=dtype)

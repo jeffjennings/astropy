@@ -1,11 +1,10 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """Function Units and Quantities."""
 
-from __future__ import annotations
-
 from abc import ABCMeta, abstractmethod
+from collections.abc import Collection
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import Self
 
 import numpy as np
 
@@ -18,18 +17,13 @@ from astropy.units import (
     UnitTypeError,
     dimensionless_unscaled,
 )
+from astropy.units.typing import PhysicalTypeID
 from astropy.utils.compat import COPY_IF_NEEDED, NUMPY_LT_2_0
 
 if NUMPY_LT_2_0:
     from numpy.core import umath as np_umath
 else:
     from numpy._core import umath as np_umath
-
-if TYPE_CHECKING:
-    from collections.abc import Collection
-    from typing import Self
-
-    from astropy.units.typing import UnitPower
 
 __all__ = ["FunctionQuantity", "FunctionUnitBase"]
 
@@ -195,7 +189,7 @@ class FunctionUnitBase(metaclass=ABCMeta):
         return self._copy(self.physical_unit.cgs)
 
     @cached_property
-    def _physical_type_id(self) -> tuple[tuple[str, UnitPower], ...]:
+    def _physical_type_id(self) -> PhysicalTypeID:
         """Get physical type corresponding to physical unit."""
         return self.physical_unit._physical_type_id
 
@@ -425,8 +419,10 @@ class FunctionUnitBase(metaclass=ABCMeta):
         if pu_str == "":
             pu_str = "1"
         if format.startswith("latex"):
-            # need to strip leading and trailing "$"
-            self_str += rf"$\mathrm{{\left( {pu_str[1:-1]} \right)}}$"
+            # Add the physical unit with parentheses, removing its latex
+            # initialization stuff ("$\mathrm{" and "}$").
+            # For self_str, remove trailing "}$" and put it back at the end.
+            self_str = rf"{self_str[:-2]}\left({pu_str[9:-2]}\right)}}$"
         else:
             pu_lines = pu_str.splitlines()
             if len(pu_lines) == 1:
@@ -437,7 +433,7 @@ class FunctionUnitBase(metaclass=ABCMeta):
                 # functional string is aligned with the fraction line
                 # (second one), and all other lines are indented
                 # accordingly.
-                f = f"{{0:^{len(self_str)+1}s}}{{1:s}}"
+                f = f"{{0:^{len(self_str) + 1}s}}{{1:s}}"
                 lines = [
                     f.format("", pu_lines[0]),
                     f.format(f"{self_str}(", f"{pu_lines[1]})"),

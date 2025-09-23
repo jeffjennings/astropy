@@ -1,16 +1,26 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 import filecmp
 import io
-from contextlib import nullcontext
 
 import numpy as np
 import pytest
 
 from astropy.io.votable import tree
-from astropy.io.votable.exceptions import E26, W07, W08, W21, W41
+from astropy.io.votable.exceptions import (
+    E26,
+    W07,
+    W08,
+    W15,
+    W21,
+    W27,
+    W37,
+    W41,
+    W47,
+    W54,
+    W57,
+)
 from astropy.io.votable.table import parse
 from astropy.io.votable.tree import MivotBlock, Resource, VOTableFile
-from astropy.tests.helper import PYTEST_LT_8_0
 from astropy.utils.data import get_pkg_data_filename
 
 
@@ -244,7 +254,7 @@ def test_version():
     for version in ("1.0", "1.6", "2.0"):
         with pytest.raises(
             ValueError,
-            match=r"supports VOTable versions '1.1', '1.2', '1.3', '1.4', '1.5'$",
+            match=r"version should be in \('1.1', '1.2', '1.3', '1.4', '1.5'\).",
         ):
             vot.version = version
 
@@ -263,14 +273,9 @@ def test_version():
     parse(io.BytesIO(begin + b"1.4" + middle + b"1.3" + end), verify="exception")
     parse(io.BytesIO(begin + b"1.5" + middle + b"1.3" + end), verify="exception")
 
-    if PYTEST_LT_8_0:
-        ctx = nullcontext()
-    else:
-        ctx = pytest.warns(W41)
-
     # Invalid versions
     for bversion in (b"1.0", b"2.0"):
-        with pytest.warns(W21), ctx:
+        with pytest.warns(W21), pytest.warns(W41):
             parse(
                 io.BytesIO(begin + bversion + middle + bversion + end),
                 verify="exception",
@@ -285,8 +290,7 @@ def votable_xml_string(version):
     votable_file.to_xml(xml_bytes)
     xml_bytes.seek(0)
     bstring = xml_bytes.read()
-    s = bstring.decode("utf-8")
-    return s
+    return bstring.decode("utf-8")
 
 
 def test_votable_tag():
@@ -624,3 +628,67 @@ def test_mivot_order(tmp_path):
         file.writelines(lines)
 
     assert filecmp.cmp(vpath, vpath_out)
+
+
+def test_version_checks_from_api():
+    """Test that a VOTable can be constructed from APIs without triggering
+    version check failure.
+    """
+    votable = VOTableFile()  # v1.4 by default
+    resource = Resource()
+    votable.resources.append(resource)
+    table0 = tree.TableElement(votable)  # Will now get the version check config.
+    resource.tables.append(table0)
+    # Not allowed in older VOTable formats.
+    votable.set_all_tables_format("binary2")
+
+    with pytest.raises(W37):
+        votable.set_all_tables_format("unknown")
+
+    votable = VOTableFile(version="1.1")
+    resource = Resource()
+    votable.resources.append(resource)
+    table0 = tree.TableElement(votable)
+    resource.tables.append(table0)
+    with pytest.raises(W37):
+        votable.set_all_tables_format("binary2")
+
+    with pytest.raises(NotImplementedError):
+        votable.set_all_tables_format("fits")
+
+    # Check TimeSys can be created (requires version config check).
+    # Force exception to make it easier to test.
+    config = {"verify": "exception"}
+    votable = VOTableFile(version="1.4", config=config)
+    _ = tree.TimeSys("REF", timescale="UTC", config=votable.config)
+
+    votable = VOTableFile(version="1.1", config=config)
+    with pytest.raises(W54):
+        tree.TimeSys("REF", timescale="UTC", config=votable.config)
+
+    # CooSys was deprecated only in v1.2 and refposition only allowed in 1.5.
+    votable = VOTableFile(version="1.2", config=config)
+    with pytest.raises(W27):
+        tree.CooSys("REF", system="ICRS", config=votable.config)
+
+    votable = VOTableFile(version="1.4", config=config)
+    with pytest.raises(W57):
+        tree.CooSys(
+            "REF", system="ICRS", refposition="Something", config=votable.config
+        )
+
+    votable = VOTableFile(version="1.5", config=config)
+    _ = tree.CooSys(
+        "REF", system="ICRS", refposition="Something", config=votable.config
+    )
+
+    # Param construction will warn less if v1.0 and no name.
+    # Must use internal API to force 1.0 version.
+    votable._version = "1.0"
+    votable._config.update(votable._get_version_checks())
+    with pytest.warns(W47):
+        tree.Param(votable, ID="REF")
+
+    votable.version = "1.3"
+    with pytest.warns((W47, W15)):
+        tree.Param(votable, ID="REF", datatype="int")

@@ -145,8 +145,10 @@ def _probably_html(table, maxchars=100000):
             return True
 
         # Filename ending in .htm or .html which exists
-        table_path = Path(table).expanduser()
-        if re.search(r"\.htm[l]?$", table[-5:], re.IGNORECASE) and table_path.is_file():
+        if (
+            re.search(r"\.htm[l]?$", table[-5:], re.IGNORECASE)
+            and Path(table).expanduser().is_file()
+        ):
             return True
 
         # Table starts with HTML document type declaration
@@ -241,11 +243,9 @@ def get_reader(reader_cls=None, inputter_cls=None, outputter_cls=None, **kwargs)
             reader_cls = fastbasic.FastBasic
         else:
             reader_cls = basic.Basic
-
-    reader = core._get_reader(
+    return core._get_reader(
         reader_cls, inputter_cls=inputter_cls, outputter_cls=outputter_cls, **kwargs
     )
-    return reader
 
 
 def _get_format_class(format):
@@ -254,7 +254,7 @@ def _get_format_class(format):
     if format in core.FORMAT_CLASSES:
         return core.FORMAT_CLASSES[format]
     raise ValueError(
-        f"ASCII format {format!r} not in allowed list " f"{sorted(core.FORMAT_CLASSES)}"
+        f"ASCII format {format!r} not in allowed list {sorted(core.FORMAT_CLASSES)}"
     )
 
 
@@ -873,9 +873,7 @@ def _read_in_chunks(table, **kwargs):
 
     # Make final table from numpy arrays, converting dict to list
     out_cols = [out_cols[name] for name in tbl0.colnames]
-    out = tbl0.__class__(out_cols, names=tbl0.colnames, meta=tbl0.meta, copy=False)
-
-    return out
+    return tbl0.__class__(out_cols, names=tbl0.colnames, meta=tbl0.meta, copy=False)
 
 
 def _read_in_chunks_generator(table, chunk_size, **kwargs):

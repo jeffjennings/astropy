@@ -37,6 +37,21 @@ def test_paths():
     assert "testpkg" in paths.get_cache_dir(rootname="testpkg")
 
 
+@pytest.mark.parametrize(
+    "environment_variable,func",
+    [
+        # Regression test for #17514 - XDG_CACHE_HOME had no effect
+        pytest.param("XDG_CACHE_HOME", paths.get_cache_dir_path, id="cache"),
+        pytest.param("XDG_CONFIG_HOME", paths.get_config_dir_path, id="config"),
+    ],
+)
+def test_xdg_variables(monkeypatch, tmp_path, environment_variable, func):
+    config_dir = tmp_path / "astropy"
+    config_dir.mkdir()
+    monkeypatch.setenv(environment_variable, str(tmp_path))
+    assert func() == config_dir
+
+
 def test_set_temp_config(tmp_path, monkeypatch):
     # Check that we start in an understood state.
     assert configuration._cfgobjs == OLD_CONFIG
@@ -153,7 +168,7 @@ def check_config(conf):
     assert "[table]" in conf
     assert "# replace_warnings = ," in conf
     assert "[table.jsviewer]" in conf
-    assert "# css_urls = https://cdn.datatables.net/1.10.12/css/jquery.dataTables.css," in conf  # fmt: skip
+    assert "# css_urls = https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.min.css" in conf  # fmt: skip
     assert "[visualization.wcsaxes]" in conf
     assert "## Whether to log exceptions before raising them." in conf
     assert "# log_exceptions = False" in conf
@@ -189,6 +204,29 @@ def test_generate_config2(tmp_path):
         conf = fp.read()
 
     check_config(conf)
+
+
+def test_generate_config_subclasses(tmp_path):
+    """Test that generate_config works with subclasses of ConfigNamespace."""
+    from astropy.config.configuration import ConfigItem, ConfigNamespace
+
+    class MyPackageNamespace(ConfigNamespace):
+        pass
+
+    class RecursiveTestConf(MyPackageNamespace):
+        ti = ConfigItem(5, "this is a Description")
+
+    with set_temp_config(tmp_path):
+        from astropy.config.configuration import generate_config
+
+        generate_config("astropy")
+
+    assert os.path.exists(tmp_path / "astropy" / "astropy.cfg")
+
+    with open(tmp_path / "astropy" / "astropy.cfg") as fp:
+        conf = fp.read()
+
+    assert "# ti = 5" in conf
 
 
 def test_create_config_file(tmp_path, caplog):
@@ -412,10 +450,11 @@ def test_config_noastropy_fallback(monkeypatch):
 
     # make sure the _find_or_create_root_dir function fails as though the
     # astropy dir could not be accessed
-    def osraiser(dirnm, linkto, pkgname=None):
+    @classmethod
+    def osraiser(cls, linkto, pkgname=None):
         raise OSError
 
-    monkeypatch.setattr(paths, "_find_or_create_root_dir", osraiser)
+    monkeypatch.setattr(paths._SetTempPath, "_find_or_create_root_dir", osraiser)
 
     # also have to make sure the stored configuration objects are cleared
     monkeypatch.setattr(configuration, "_cfgobjs", {})

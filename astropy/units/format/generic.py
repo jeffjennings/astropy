@@ -14,31 +14,24 @@
 Handles a "generic" string format for units
 """
 
-from __future__ import annotations
-
 import re
 import unicodedata
 import warnings
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from re import Match, Pattern
+from typing import ClassVar, Final
 
+import numpy as np
+
+from astropy.extern.ply.lex import Lexer
+from astropy.units.core import CompositeUnit, Unit, UnitBase, get_current_unit_registry
+from astropy.units.enums import DeprecatedUnitAction
 from astropy.units.errors import UnitsWarning
+from astropy.units.typing import UnitScale
 from astropy.utils import classproperty, parsing
-from astropy.utils.misc import did_you_mean
+from astropy.utils.parsing import ThreadSafeParser
 
-from . import core
 from .base import Base, _ParsingFormatMixin
-
-if TYPE_CHECKING:
-    from re import Match, Pattern
-    from typing import ClassVar, Final
-
-    import numpy as np
-
-    from astropy.extern.ply.lex import Lexer
-    from astropy.units import UnitBase
-    from astropy.units.typing import UnitScale
-    from astropy.utils.parsing import ThreadSafeParser
 
 
 class _GenericParserMixin(_ParsingFormatMixin):
@@ -46,11 +39,9 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
     _tokens: ClassVar[tuple[str, ...]] = (
         "COMMA",
-        "DOUBLE_STAR",
-        "STAR",
-        "PERIOD",
-        "SOLIDUS",
-        "CARET",
+        "POWER",
+        "PRODUCT",
+        "DIVISION",
         "OPEN_PAREN",
         "CLOSE_PAREN",
         "FUNCNAME",
@@ -65,11 +56,9 @@ class _GenericParserMixin(_ParsingFormatMixin):
         tokens = cls._tokens
 
         t_COMMA = r"\,"
-        t_STAR = r"\*"
-        t_PERIOD = r"\."
-        t_SOLIDUS = r"/"
-        t_DOUBLE_STAR = r"\*\*"
-        t_CARET = r"\^"
+        t_PRODUCT = "[*.]"
+        t_DIVISION = "/"
+        t_POWER = r"\^|(\*\*)"
         t_OPEN_PAREN = r"\("
         t_CLOSE_PAREN = r"\)"
 
@@ -195,17 +184,15 @@ class _GenericParserMixin(_ParsingFormatMixin):
             """
             unit : product_of_units
                  | factor product_of_units
-                 | factor product product_of_units
+                 | factor PRODUCT product_of_units
                  | division_product_of_units
                  | factor division_product_of_units
-                 | factor product division_product_of_units
+                 | factor PRODUCT division_product_of_units
                  | inverse_unit
                  | factor inverse_unit
-                 | factor product inverse_unit
+                 | factor PRODUCT inverse_unit
                  | factor
             """
-            from astropy.units.core import CompositeUnit, Unit
-
             if len(p) == 2:
                 p[0] = Unit(p[1])
             elif len(p) == 3:
@@ -215,11 +202,9 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
         def p_division_product_of_units(p):
             """
-            division_product_of_units : division_product_of_units division product_of_units
+            division_product_of_units : division_product_of_units DIVISION product_of_units
                                       | product_of_units
             """
-            from astropy.units.core import Unit
-
             if len(p) == 4:
                 p[0] = Unit(p[1] / p[3])
             else:
@@ -227,7 +212,7 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
         def p_inverse_unit(p):
             """
-            inverse_unit : division unit_expression
+            inverse_unit : DIVISION unit_expression
             """
             p[0] = p[2] ** -1
 
@@ -243,7 +228,7 @@ class _GenericParserMixin(_ParsingFormatMixin):
             """
             factor_float : signed_float
                          | signed_float UINT signed_int
-                         | signed_float UINT power numeric_power
+                         | signed_float UINT POWER numeric_power
             """
             if cls.name == "fits":
                 raise ValueError("Numeric factor not supported by FITS")
@@ -258,9 +243,9 @@ class _GenericParserMixin(_ParsingFormatMixin):
             """
             factor_int : UINT
                        | UINT signed_int
-                       | UINT power numeric_power
+                       | UINT POWER numeric_power
                        | UINT UINT signed_int
-                       | UINT UINT power numeric_power
+                       | UINT UINT POWER numeric_power
             """
             if cls.name == "fits":
                 raise ValueError("Numeric factor not supported by FITS")
@@ -278,10 +263,10 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
         def p_factor_fits(p):
             """
-            factor_fits : UINT power OPEN_PAREN signed_int CLOSE_PAREN
-                        | UINT power OPEN_PAREN UINT CLOSE_PAREN
-                        | UINT power signed_int
-                        | UINT power UINT
+            factor_fits : UINT POWER OPEN_PAREN signed_int CLOSE_PAREN
+                        | UINT POWER OPEN_PAREN UINT CLOSE_PAREN
+                        | UINT POWER signed_int
+                        | UINT POWER UINT
                         | UINT SIGN UINT
                         | UINT OPEN_PAREN signed_int CLOSE_PAREN
             """
@@ -302,7 +287,7 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
         def p_product_of_units(p):
             """
-            product_of_units : unit_expression product product_of_units
+            product_of_units : unit_expression PRODUCT product_of_units
                              | unit_expression product_of_units
                              | unit_expression
             """
@@ -326,7 +311,7 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
         def p_unit_with_power(p):
             """
-            unit_with_power : UNIT power numeric_power
+            unit_with_power : UNIT POWER numeric_power
                             | UNIT numeric_power
                             | UNIT
             """
@@ -360,7 +345,7 @@ class _GenericParserMixin(_ParsingFormatMixin):
 
         def p_frac(p):
             """
-            frac : sign UINT division sign UINT
+            frac : sign UINT DIVISION sign UINT
             """
             p[0] = Fraction(p[1] * p[2], p[4] * p[5])
 
@@ -373,24 +358,6 @@ class _GenericParserMixin(_ParsingFormatMixin):
                 p[0] = p[1]
             else:
                 p[0] = 1
-
-        def p_product(p):
-            """
-            product : STAR
-                    | PERIOD
-            """
-
-        def p_division(p):
-            """
-            division : SOLIDUS
-            """
-
-        def p_power(p):
-            """
-            power : DOUBLE_STAR
-                  | CARET
-            """
-            p[0] = p[1]
 
         def p_signed_int(p):
             """
@@ -405,21 +372,18 @@ class _GenericParserMixin(_ParsingFormatMixin):
             """
             p[0] = p[1] * p[2]
 
-        def p_function_name(p):
-            """
-            function_name : FUNCNAME
-            """
-            p[0] = p[1]
-
         def p_function(p):
             """
-            function : function_name OPEN_PAREN main CLOSE_PAREN
+            function : FUNCNAME OPEN_PAREN main CLOSE_PAREN
             """
             if p[1] == "sqrt":
                 p[0] = p[3] ** 0.5
                 return
             elif p[1] in ("mag", "dB", "dex"):
-                function_unit = cls._parse_unit(p[1])
+                try:
+                    function_unit = cls._validate_unit(p[1])
+                except KeyError:
+                    raise ValueError(cls._invalid_unit_error_message(p[1])) from None
                 # In Generic, this is callable, but that does not have to
                 # be the case in subclasses (e.g., in VOUnit it is not).
                 if callable(function_unit):
@@ -443,31 +407,30 @@ class Generic(Base, _GenericParserMixin):
     supports any unit available in the `astropy.units` namespace.
     """
 
+    @classproperty
+    def _units(cls) -> dict[str, UnitBase]:
+        return get_current_unit_registry().registry
+
     @classmethod
-    def _parse_unit(cls, s: str, detailed_exception: bool = True) -> UnitBase:
-        registry = core.get_current_unit_registry().registry
+    def _validate_unit(
+        cls, s: str, deprecations: DeprecatedUnitAction = DeprecatedUnitAction.WARN
+    ) -> UnitBase:
         if s in cls._unit_symbols:
             s = cls._unit_symbols[s]
 
         elif not s.isascii():
-            if s[0] == "\N{MICRO SIGN}":
-                s = "u" + s[1:]
-            elif s[0] == "°":
+            if s[0].startswith("°"):
                 s = "deg" if len(s) == 1 else "deg_" + s[1:]
-            if s[-1] in cls._prefixable_unit_symbols:
-                s = s[:-1] + cls._prefixable_unit_symbols[s[-1]]
-            elif len(s) > 1 and s[-1] in cls._unit_suffix_symbols:
+            if len(s) > 1 and s[-1] in cls._unit_suffix_symbols:
                 s = s[:-1] + cls._unit_suffix_symbols[s[-1]]
             elif s.endswith("R\N{INFINITY}"):
                 s = s[:-2] + "Ry"
 
-        if s in registry:
-            return registry[s]
+        return cls._units[s]
 
-        if detailed_exception:
-            raise ValueError(f"{s} is not a valid unit. {did_you_mean(s, registry)}")
-        else:
-            raise ValueError()
+    @classmethod
+    def _invalid_unit_error_message(cls, unit: str) -> str:
+        return f"{unit} is not a valid unit. {cls._did_you_mean_units(unit)}"
 
     _unit_symbols: ClassVar[dict[str, str]] = {
         "%": "percent",
@@ -475,12 +438,6 @@ class Generic(Base, _GenericParserMixin):
         "\N{DOUBLE PRIME}": "arcsec",
         "\N{MODIFIER LETTER SMALL H}": "hourangle",
         "e\N{SUPERSCRIPT MINUS}": "electron",
-    }
-
-    _prefixable_unit_symbols: ClassVar[dict[str, str]] = {
-        "\N{GREEK CAPITAL LETTER OMEGA}": "Ohm",
-        "\N{LATIN CAPITAL LETTER A WITH RING ABOVE}": "Angstrom",
-        "\N{SCRIPT SMALL L}": "l",
     }
 
     _unit_suffix_symbols: ClassVar[dict[str, str]] = {
@@ -493,17 +450,8 @@ class Generic(Base, _GenericParserMixin):
         "\N{LATIN SUBSCRIPT SMALL LETTER P}": "_p",
     }
 
-    _translations: ClassVar[dict[int, str]] = str.maketrans(
-        {
-            "\N{GREEK SMALL LETTER MU}": "\N{MICRO SIGN}",
-            "\N{MINUS SIGN}": "-",
-        }
-    )
-    """Character translations that should be applied before parsing a string.
-
-    Note that this does explicitly *not* generally translate MICRO SIGN to u,
-    since then a string like 'µ' would be interpreted as unit mass.
-    """
+    _translations: ClassVar[dict[int, str]] = str.maketrans({"\N{MINUS SIGN}": "-"})
+    """Character translations that should be applied before parsing a string."""
 
     _superscripts: Final[str] = (
         "\N{SUPERSCRIPT MINUS}"
