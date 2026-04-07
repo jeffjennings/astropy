@@ -16,7 +16,9 @@ from astropy.coordinates.representation import (
 from astropy.coordinates.transformations import (
     DynamicMatrixTransform,
     FunctionTransformWithFiniteDifference,
+    RepresentationFunctionTransform,
 )
+
 from astropy.time import Time
 from astropy.utils.decorators import format_doc
 
@@ -81,13 +83,28 @@ class FK4(BaseCoordinateFrame, FK4Frame):
 # the "self" transform
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4, FK4)
-def fk4_to_fk4(fk4coord1, fk4frame2):
+@frame_transform_graph.transform(RepresentationFunctionTransform, FK4Frame, FK4Frame)
+def fk4_to_fk4(fk4frame1, fk4frame2):
     # deceptively complicated: need to transform to No E-terms FK4, precess, and
     # then come back, because precession is non-trivial with E-terms
-    fnoe_w_eqx1 = fk4coord1.transform_to(FK4NoETerms(equinox=fk4coord1.equinox))
-    fnoe_w_eqx2 = fnoe_w_eqx1.transform_to(FK4NoETerms(equinox=fk4frame2.equinox))
-    return fnoe_w_eqx2.transform_to(fk4frame2)
+    needs_precess = fk4frame1.equinox != fk4frame2.equinox
+
+    def converter(rep):
+        fk4coord1 = FK4(rep, equinox=fk4frame1.equinox, obstime=fk4frame1.obstime)
+        fnoe_w_eqx1 = fk4coord1.transform_to(FK4NoETerms(equinox=fk4coord1.equinox))
+        if needs_precess:
+            fnoe_w_eqx1 = fnoe_w_eqx1.transform_to(FK4NoETerms(equinox=fk4frame2.equinox))
+        return fnoe_w_eqx1.transform_to(
+            FK4(equinox=fk4frame2.equinox, obstime=fk4frame2.obstime)
+        ).data
+
+    return converter
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4, FK4)
+def fk4_to_fk4_legacy(fk4coord1, fk4frame2):
+    converter = fk4_to_fk4(fk4coord1, fk4frame2)
+    return fk4frame2.realize_frame(converter(fk4coord1.data))
 
 
 @format_doc(base_doc_frame, footer=doc_footer_fk4)
@@ -173,6 +190,10 @@ class FK4NoETerms(BaseCoordinateFrame, FK4NoETermsFrame):
 def fk4noe_to_fk4noe(fk4necoord1, fk4neframe2):
     return fk4necoord1._precession_matrix(fk4necoord1.equinox, fk4neframe2.equinox)
 
+@frame_transform_graph.transform(DynamicMatrixTransform, FK4NoETermsFrame, FK4NoETermsFrame)
+def fk4noe_to_fk4noe_frame(fk4neframe1, fk4neframe2):
+    return FK4NoETermsFrame._precession_matrix(fk4neframe1.equinox, fk4neframe2.equinox)
+
 
 # FK4-NO-E to/from FK4 ----------------------------->
 # Unlike other frames, this module include *two* frame classes for FK4
@@ -206,86 +227,109 @@ def fk4_e_terms(equinox):
     return (ek * np.sin(g), minus_ek_cos_g * np.cos(o), minus_ek_cos_g * np.sin(o))
 
 
-@frame_transform_graph.transform(
-    FunctionTransformWithFiniteDifference, FK4, FK4NoETerms
-)
-def fk4_to_fk4_no_e(fk4coord, fk4noeframe):
-    # Extract cartesian vector
-    rep = fk4coord.cartesian
+@frame_transform_graph.transform(RepresentationFunctionTransform, FK4Frame, FK4NoETermsFrame)
+def fk4_to_fk4_no_e(fk4frame, fk4noeframe):
+    needs_precess = fk4frame.equinox != fk4noeframe.equinox
 
-    # Find distance (for re-normalization)
-    d_orig = rep.norm()
-    rep /= d_orig
+    def converter(rep):
+        # Extract cartesian vector
+        cart = rep.represent_as(CartesianRepresentation)
 
-    # Apply E-terms of aberration. Note that this depends on the equinox (not
-    # the observing time/epoch) of the coordinates. See issue #1496 for a
-    # discussion of this.
-    eterms_a = CartesianRepresentation(
-        u.Quantity(fk4_e_terms(fk4coord.equinox), u.one, copy=None),
-        copy=False,
-    )
-    rep = rep - eterms_a + eterms_a.dot(rep) * rep
+        # Find distance (for re-normalization)
+        d_orig = cart.norm()
+        cart /= d_orig
 
-    # Find new distance (for re-normalization)
-    d_new = rep.norm()
-
-    # Renormalize
-    rep *= d_orig / d_new
-
-    # now re-cast into an appropriate Representation, and precess if need be
-    if isinstance(fk4coord.data, UnitSphericalRepresentation):
-        rep = rep.represent_as(UnitSphericalRepresentation)
-
-    # if no obstime was given in the new frame, use the old one for consistency
-    newobstime = (
-        fk4coord._obstime if fk4noeframe._obstime is None else fk4noeframe._obstime
-    )
-
-    fk4noe = FK4NoETerms(rep, equinox=fk4coord.equinox, obstime=newobstime)
-    if fk4coord.equinox != fk4noeframe.equinox:
-        # precession
-        fk4noe = fk4noe.transform_to(fk4noeframe)
-    return fk4noe
-
-
-@frame_transform_graph.transform(
-    FunctionTransformWithFiniteDifference, FK4NoETerms, FK4
-)
-def fk4_no_e_to_fk4(fk4noecoord, fk4frame):
-    # first precess, if necessary
-    if fk4noecoord.equinox != fk4frame.equinox:
-        fk4noe_w_fk4equinox = FK4NoETerms(
-            equinox=fk4frame.equinox, obstime=fk4noecoord.obstime
+        # Apply E-terms of aberration. Note that this depends on the equinox (not
+        # the observing time/epoch) of the coordinates. See issue #1496 for a
+        # discussion of this.
+        eterms_a = CartesianRepresentation(
+            u.Quantity(fk4_e_terms(fk4frame.equinox), u.one, copy=None),
+            copy=False,
         )
-        fk4noecoord = fk4noecoord.transform_to(fk4noe_w_fk4equinox)
+        cart = cart - eterms_a + eterms_a.dot(cart) * cart
 
-    # Extract cartesian vector
-    rep = fk4noecoord.cartesian
+        # Find new distance (for re-normalization)
+        d_new = cart.norm()
 
-    # Find distance (for re-normalization)
-    d_orig = rep.norm()
-    rep /= d_orig
+        # Renormalize
+        cart *= d_orig / d_new
 
-    # Apply E-terms of aberration. Note that this depends on the equinox (not
-    # the observing time/epoch) of the coordinates. See issue #1496 for a
-    # discussion of this.
-    eterms_a = CartesianRepresentation(
-        u.Quantity(fk4_e_terms(fk4noecoord.equinox), u.one, copy=None),
-        copy=False,
-    )
+        # now re-cast into an appropriate Representation, and precess if need be
+        if isinstance(rep, UnitSphericalRepresentation):
+            cart = cart.represent_as(UnitSphericalRepresentation)
 
-    eterms_a_plus_rep_ini = eterms_a + rep
-    for _ in range(10):
-        rep = eterms_a_plus_rep_ini / (1.0 + eterms_a.dot(rep))
+        # if no obstime was given in the new frame, use the old one for consistency
+        newobstime = (
+            fk4frame.obstime if fk4noeframe.obstime is None else fk4noeframe.obstime
+        )
 
-    # Find new distance (for re-normalization)
-    d_new = rep.norm()
+        fk4noe = FK4NoETerms(cart, equinox=fk4frame.equinox, obstime=newobstime)
+        if needs_precess:
+            # precession
+            fk4noe = fk4noe.transform_to(fk4noeframe)
+        return fk4noe.data
 
-    # Renormalize
-    rep *= d_orig / d_new
+    return converter
 
-    # now re-cast into an appropriate Representation, and precess if need be
-    if isinstance(fk4noecoord.data, UnitSphericalRepresentation):
-        rep = rep.represent_as(UnitSphericalRepresentation)
 
-    return fk4frame.realize_frame(rep)
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4, FK4NoETerms)
+def fk4_to_fk4_no_e_legacy(fk4coo, fk4noeframe):
+    converter = fk4_to_fk4_no_e(fk4coo, fk4noeframe)
+    return fk4noeframe.realize_frame(converter(fk4coo.data))
+
+
+@frame_transform_graph.transform(RepresentationFunctionTransform, FK4NoETermsFrame, FK4Frame)
+def fk4_no_e_to_fk4(fk4noeframe, fk4frame):
+    needs_precess = fk4noeframe.equinox != fk4frame.equinox
+    working_equinox = fk4frame.equinox if needs_precess else fk4noeframe.equinox
+
+    def converter(rep):
+        # first precess, if necessary
+        if needs_precess:
+            fk4noe_w_fk4equinox = FK4NoETerms(
+                equinox=fk4frame.equinox, obstime=fk4noeframe.obstime
+            )
+            fk4noecoord = FK4NoETerms(
+                rep, equinox=fk4noeframe.equinox, obstime=fk4noeframe.obstime
+            )
+            fk4noecoord = fk4noecoord.transform_to(fk4noe_w_fk4equinox)
+            rep = fk4noecoord.data
+
+        # Extract cartesian vector
+        cart = rep.represent_as(CartesianRepresentation)
+
+        # Find distance (for re-normalization)
+        d_orig = cart.norm()
+        cart /= d_orig
+
+        # Apply E-terms of aberration. Note that this depends on the equinox (not
+        # the observing time/epoch) of the coordinates. See issue #1496 for a
+        # discussion of this.
+        eterms_a = CartesianRepresentation(
+            u.Quantity(fk4_e_terms(working_equinox), u.one, copy=None),
+            copy=False,
+        )
+
+        eterms_a_plus_rep_ini = eterms_a + cart
+        for _ in range(10):
+            cart = eterms_a_plus_rep_ini / (1.0 + eterms_a.dot(cart))
+
+        # Find new distance (for re-normalization)
+        d_new = cart.norm()
+
+        # Renormalize
+        cart *= d_orig / d_new
+
+        # now re-cast into an appropriate Representation
+        if isinstance(rep, UnitSphericalRepresentation):
+            cart = cart.represent_as(UnitSphericalRepresentation)
+
+        return cart
+
+    return converter
+
+
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4NoETerms, FK4)
+def fk4_no_e_to_fk4_legacy(fk4noecoo, fk4frame):
+    converter = fk4_no_e_to_fk4(fk4noecoo, fk4frame)
+    return fk4frame.realize_frame(converter(fk4noecoo.data))
