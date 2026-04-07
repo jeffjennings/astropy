@@ -24,9 +24,26 @@ from astropy.coordinates.transformations.composite import CompositeTransform
 from astropy.coordinates.transformations.function import (
     FunctionTransform,
     FunctionTransformWithFiniteDifference,
+    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 __all__ = ["TransformGraph"]
+
+
+# TODO: simplify once BaseCoordinateFrame is deprecated
+def _resolve_dataless(cls):
+    """Return the legacy subclass of a data-less ``*Frame`` class, or *cls* unchanged"""
+    from astropy.coordinates.baseframe import BaseCoordinateFrame
+
+    if issubclass(cls, BaseCoordinateFrame):
+        return cls
+
+    # Data-less frame — find the first direct subclass that is a legacy frame.
+    for sub in cls.__subclasses__():
+        if issubclass(sub, BaseCoordinateFrame):
+            return sub
+    return cls
 
 
 # map class names to colorblind-safe colors
@@ -34,6 +51,8 @@ trans_to_color: Final = {
     AffineTransform: "#555555",  # gray
     FunctionTransform: "#783001",  # dark red-ish/brown
     FunctionTransformWithFiniteDifference: "#d95f02",  # red-ish
+    RepresentationFunctionTransform: "#d95f02",  # red-ish
+    RepresentationFunctionTransformWithFiniteDifference: "#d95f02",  # red-ish
     StaticMatrixTransform: "#7570b3",  # blue-ish
     DynamicMatrixTransform: "#1b9e77",  # green-ish
 }
@@ -85,10 +104,20 @@ class TransformGraph:
 
     @functools.cached_property
     def _cached_names(self):
+        # TODO: simplify once BaseCoordinateFrame is deprecated
+        from astropy.coordinates.baseframe import BaseCoordinateFrame as _BCF
+
         dct = {}
         for c in self.frame_set:
             if (nm := getattr(c, "name", None)) is not None:
-                dct |= dict.fromkeys(nm if isinstance(nm, list) else [nm], c)
+                for name in nm if isinstance(nm, list) else [nm]:
+                    existing = dct.get(name)
+                    # On a name conflict, keep a BaseCoordinateFrame subclass
+                    # over a dataless-only BaseFrame subclass (e.g., prefer ICRS over
+                    # ICRSFrame when both are named "icrs").
+                    if existing is not None and issubclass(existing, _BCF) and not issubclass(c, _BCF):
+                        continue
+                    dct[name] = c
         return dct
 
     @property
@@ -380,6 +409,17 @@ class TransformGraph:
             raise TypeError("tosys is not a class")
 
         path, distance = self.find_shortest_path(fromsys, tosys)
+
+        if path is None:
+            # TODO: simplify once BaseCoordinateFrame is deprecated
+            # If either class is a data-less *Frame, resolve it to
+            # the corresponding legacy frame class and retry
+            fromsys_r = _resolve_dataless(fromsys)
+            tosys_r = _resolve_dataless(tosys)
+            if fromsys_r is not fromsys or tosys_r is not tosys:
+                path, distance = self.find_shortest_path(fromsys_r, tosys_r)
+                if path is not None:
+                    fromsys, tosys = fromsys_r, tosys_r
 
         if path is None:
             return None
