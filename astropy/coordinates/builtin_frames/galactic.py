@@ -5,8 +5,10 @@ from astropy.coordinates import Angle
 from astropy.coordinates import representation as r
 from astropy.coordinates.baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     RepresentationMapping,
     base_doc,
+    base_doc_frame,
 )
 from astropy.utils.decorators import format_doc
 
@@ -15,7 +17,7 @@ from .fk4 import FK4NoETerms
 # these are needed for defining the NGP
 from .fk5 import FK5
 
-__all__ = ["Galactic"]
+__all__ = ["Galactic", "GalacticFrame"]
 
 
 doc_components = """
@@ -47,8 +49,8 @@ doc_footer = """
 """
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer)
-class Galactic(BaseCoordinateFrame):
+@format_doc(base_doc_frame, footer=doc_footer)
+class GalacticFrame(BaseFrame):
     """
     A coordinate or frame in the Galactic coordinate system.
 
@@ -59,7 +61,15 @@ class Galactic(BaseCoordinateFrame):
     [1]_). However, unlike the `~astropy.coordinates.Galactocentric` frame, the
     *origin* of this frame in 3D space is the solar system barycenter, not
     the center of the Milky Way.
+
+    NOTE:
+    This class only holds metadata defining the Galactic reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `Galactic` class.      
     """
+
+    name = "galactic"
 
     frame_specific_representation_info = {
         r.SphericalRepresentation: [
@@ -99,3 +109,19 @@ class Galactic(BaseCoordinateFrame):
     # optimizing the self-consistency.
     _ngp_J2000 = FK5(ra=192.8594812065348 * u.degree, dec=27.12825118085622 * u.degree)
     _lon0_J2000 = Angle(122.9319185680026, u.degree)
+
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer)
+class Galactic(BaseCoordinateFrame, GalacticFrame):
+    """
+    A coordinate or frame in the Galactic coordinate system.
+
+    This frame is used in a variety of Galactic contexts because it has as its
+    x-y plane the plane of the Milky Way.  The positive x direction (i.e., the
+    l=0, b=0 direction) points to the center of the Milky Way and the z-axis
+    points toward the North Galactic Pole (following the IAU's 1958 definition
+    [1]_). However, unlike the `~astropy.coordinates.Galactocentric` frame, the
+    *origin* of this frame in 3D space is the solar system barycenter, not
+    the center of the Milky Way.
+    """
+    pass

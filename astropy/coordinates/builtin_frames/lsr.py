@@ -5,8 +5,10 @@ from astropy.coordinates import representation as r
 from astropy.coordinates.attributes import CartesianRepresentationAttribute
 from astropy.coordinates.baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     RepresentationMapping,
     base_doc,
+    base_doc_frame,
     frame_transform_graph,
 )
 from astropy.coordinates.transformations import AffineTransform
@@ -23,8 +25,7 @@ J2000 = Time("J2000")
 
 v_bary_Schoenrich2010 = r.CartesianRepresentation([11.1, 12.24, 7.25] * u.km / u.s)
 
-__all__ = ["LSR", "LSRD", "LSRK", "GalacticLSR"]
-
+__all__ = ["LSR", "LSRFrame", "LSRD", "LSRDFrame", "LSRK", "LSRKFrame", "GalacticLSR", "GalacticLSRFrame"]
 
 doc_footer_lsr = """
     Other parameters
@@ -39,8 +40,8 @@ doc_footer_lsr = """
 """
 
 
-@format_doc(base_doc, components=doc_components_radec, footer=doc_footer_lsr)
-class LSR(BaseRADecFrame):
+@format_doc(base_doc_frame, footer=doc_footer_lsr)
+class LSRFrame(BaseRADecFrame):
     r"""A frame in the Local Standard of Rest (LSR).
 
     For Earth-bound observers it is often convenient to use a reference
@@ -64,7 +65,14 @@ class LSR(BaseRADecFrame):
 
     The frame attributes are listed under **Other Parameters**.
 
+    NOTE:
+    This class only holds metadata defining the LSR reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `LSR` class.     
     """
+
+    name = "lsr"
 
     # frame attributes:
     v_bary = CartesianRepresentationAttribute(
@@ -72,6 +80,34 @@ class LSR(BaseRADecFrame):
         unit=u.km / u.s,
         doc="The relative velocity of the solar-system barycenter",
     )
+
+
+@format_doc(base_doc, components=doc_components_radec, footer=doc_footer_lsr)
+class LSR(BaseCoordinateFrame, LSRFrame):
+    r"""A frame in the Local Standard of Rest (LSR).
+
+    For Earth-bound observers it is often convenient to use a reference
+    frame that is tied to the Solar System barycenter, but such frames
+    are not very useful for describing galactic dynamics. The dynamical
+    LSR is instead tied to the circular velocity at the Sun's location,
+    but defining a circular velocity in a non-axisymmetric galaxy
+    requires non-trivial averaging. The kinematic LSR is understood as a
+    frame in which the average motion of the stars in the solar
+    neighborhood is zero, but in practice that is not straightforward
+    either because the average motion is different for different
+    spectral types.
+
+    The default parameters of this frame are those of the dynamical LSR
+    of Schönrich et al. (2010), meaning the Galactic (right-handed)
+    Cartesian velocity components of the solar motion are
+    :math:`(U, V, W) = (11.1, 12.24, 7.25)~{{\rm km}}~{{\rm s}}^{{-1}}`,
+    but a different solar motion can be specified with the ``v_bary``
+    argument. The frame is axis-aligned and co-spatial with
+    `~astropy.coordinates.ICRS`.
+
+    The frame attributes are listed under **Other Parameters**.
+    """
+    pass
 
 
 @frame_transform_graph.transform(AffineTransform, ICRS, LSR)
@@ -117,8 +153,8 @@ doc_components_gal = """
 """
 
 
-@format_doc(base_doc, components=doc_components_gal, footer=doc_footer_lsr)
-class GalacticLSR(BaseCoordinateFrame):
+@format_doc(base_doc_frame, footer=doc_footer_lsr)
+class GalacticLSRFrame(BaseFrame):
     r"""A frame in the Local Standard of Rest (LSR), aligned to the Galactic frame.
 
     For Earth-bound observers it is often convenient to use a reference
@@ -143,7 +179,14 @@ class GalacticLSR(BaseCoordinateFrame):
 
     The frame attributes are listed under **Other Parameters**.
 
+    NOTE:
+    This class only holds metadata defining the GalacticLSR reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `GalacticLSR` class.     
     """
+
+    name = "galacticlsr"
 
     frame_specific_representation_info = {
         r.SphericalRepresentation: [
@@ -161,6 +204,35 @@ class GalacticLSR(BaseCoordinateFrame):
         unit=u.km / u.s,
         doc="The relative velocity of the solar-system barycenter",
     )
+
+
+@format_doc(base_doc, components=doc_components_gal, footer=doc_footer_lsr)
+class GalacticLSR(BaseCoordinateFrame, GalacticLSRFrame):
+    r"""A frame in the Local Standard of Rest (LSR), aligned to the Galactic frame.
+
+    For Earth-bound observers it is often convenient to use a reference
+    frame that is tied to the Solar System barycenter, but such frames
+    are not very useful for describing galactic dynamics. The dynamical
+    LSR is instead tied to the circular velocity at the Sun's location,
+    but defining a circular velocity in a non-axisymmetric galaxy
+    requires non-trivial averaging. The kinematic LSR is understood as a
+    frame in which the average motion of the stars in the solar
+    neighborhood is zero, but in practice that is not straightforward
+    either because the average motion is different for different
+    spectral types.
+
+    The default parameters of this frame are those of the dynamical LSR
+    of Schönrich et al. (2010), meaning the Galactic (right-handed)
+    Cartesian velocity components of the solar motion are
+    :math:`(U, V, W) = (11.1, 12.24, 7.25)~{{\rm km}}~{{\rm s}}^{{-1}}`,
+    but a different solar motion can be specified with the ``v_bary``
+    argument. The frame is rotated relative to the
+    `~astropy.coordinates.ICRS` so that it is axis-aligned and
+    co-spatial with the `~astropy.coordinates.Galactic` frame.
+
+    The frame attributes are listed under **Other Parameters**.
+    """
+    pass
 
 
 @frame_transform_graph.transform(AffineTransform, Galactic, GalacticLSR)
@@ -182,7 +254,7 @@ def galacticlsr_to_galactic(lsr_coord, galactic_frame):
 # ------------------------------------------------------------------------------
 
 
-class LSRK(BaseRADecFrame):
+class LSRKFrame(BaseRADecFrame):
     """A frame in the Kinematic Local Standard of Rest (LSR).
 
     Conceptually the kinematic LSR is a frame where the average motion
@@ -198,7 +270,33 @@ class LSRK(BaseRADecFrame):
     meaning the solar motion is 20 km/s towards RA=270 Dec=30 (B1900).
     The frame is axis-aligned and co-spatial with `~astropy.coordinates.ICRS`.
 
+    NOTE:
+    This class only holds metadata defining the LSRK reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `LSRK` class.     
     """
+
+    name = "lsrk"
+
+
+class LSRK(BaseCoordinateFrame, LSRKFrame):
+    """A frame in the Kinematic Local Standard of Rest (LSR).
+
+    Conceptually the kinematic LSR is a frame where the average motion
+    of the stars in the solar neighborhood is zero. In practice, the
+    observed average motion is different for different spectral types,
+    which has historically justified using convenient rounded values for
+    the solar motion relative to the LSR. This LSRK frame uses the
+    definition from
+
+        Gordon 1975, Methods of Experimental Physics: Volume 12:
+        Astrophysics, Part C: Radio Observations - Section 6.1.5.
+
+    meaning the solar motion is 20 km/s towards RA=270 Dec=30 (B1900).
+    The frame is axis-aligned and co-spatial with `~astropy.coordinates.ICRS`.
+    """
+    pass
 
 
 # NOTE: To avoid a performance penalty at import time, we hard-code the ICRS
@@ -233,7 +331,7 @@ def lsrk_to_icrs(lsr_coord, icrs_frame):
 # ------------------------------------------------------------------------------
 
 
-class LSRD(BaseRADecFrame):
+class LSRDFrame(BaseRADecFrame):
     r"""A frame in the Dynamical Local Standard of Rest (LSR).
 
     Conceptually the dynamical LSR is a frame moving at the circular
@@ -249,7 +347,33 @@ class LSRD(BaseRADecFrame):
     or 16.5 km/s towards l=53 b=25. The frame is axis-aligned and
     co-spatial with `~astropy.coordinates.ICRS`.
 
+    NOTE:
+    This class only holds metadata defining the LSRD reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `LSRD` class.      
     """
+
+    name = "lsrd"
+
+
+class LSRD(BaseCoordinateFrame, LSRDFrame):
+    r"""A frame in the Dynamical Local Standard of Rest (LSR).
+
+    Conceptually the dynamical LSR is a frame moving at the circular
+    velocity at the Sun's location. In practice, the concept of a
+    circular velocity in a non-axisymmetric galaxy is not trivial.
+    This LSRD frame uses the historical definition from
+
+       Delhaye 1965, Solar Motion and Velocity Distribution of
+       Common Stars - Section 2.1.
+
+    meaning the solar motion is
+    :math:`(U, V, W) = (9, 12, 7)~{{\rm km}}~{{\rm s}}^{{-1}}`,
+    or 16.5 km/s towards l=53 b=25. The frame is axis-aligned and
+    co-spatial with `~astropy.coordinates.ICRS`.
+    """
+    pass
 
 
 # NOTE: To avoid a performance penalty at import time, we hard-code the ICRS

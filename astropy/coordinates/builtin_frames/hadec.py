@@ -9,12 +9,14 @@ from astropy.coordinates.attributes import (
 )
 from astropy.coordinates.baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     RepresentationMapping,
     base_doc,
+    base_doc_frame,
 )
 from astropy.utils.decorators import format_doc
 
-__all__ = ["HADec"]
+__all__ = ["HADec", "HADecFrame"]
 
 
 doc_components = """
@@ -74,8 +76,8 @@ doc_footer = """
     """
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer)
-class HADec(BaseCoordinateFrame):
+@format_doc(base_doc_frame, footer=doc_footer)
+class HADecFrame(BaseFrame):
     """
     A coordinate or frame in the Hour Angle-Declination system (Equatorial
     coordinates) with respect to the WGS84 ellipsoid.  Hour Angle is oriented
@@ -87,7 +89,15 @@ class HADec(BaseCoordinateFrame):
 
     The frame attributes are listed under **Other Parameters**, which are
     necessary for transforming from HADec to some other system.
+
+    NOTE:
+    This class only holds metadata defining the HADec reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `HADec` class.     
     """
+
+    name = "hadec"
 
     frame_specific_representation_info = {
         r.SphericalRepresentation: [
@@ -117,6 +127,22 @@ class HADec(BaseCoordinateFrame):
         unit=u.micron,
         doc="The average wavelength of observations",
     )
+
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer)
+class HADec(BaseCoordinateFrame, HADecFrame):
+    """
+    A coordinate or frame in the Hour Angle-Declination system (Equatorial
+    coordinates) with respect to the WGS84 ellipsoid.  Hour Angle is oriented
+    with respect to upper culmination such that the hour angle is negative to
+    the East and positive to the West.
+
+    This frame is assumed to *include* refraction effects if the ``pressure``
+    frame attribute is non-zero.
+
+    The frame attributes are listed under **Other Parameters**, which are
+    necessary for transforming from HADec to some other system.
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

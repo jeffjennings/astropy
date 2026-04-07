@@ -7,7 +7,7 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.attributes import TimeAttribute
-from astropy.coordinates.baseframe import base_doc, frame_transform_graph
+from astropy.coordinates.baseframe import BaseCoordinateFrame, base_doc, base_doc_frame, frame_transform_graph
 from astropy.coordinates.matrix_utilities import rotation_matrix
 from astropy.coordinates.representation import (
     CartesianRepresentation,
@@ -23,7 +23,7 @@ from astropy.utils.decorators import format_doc
 from .baseradec import BaseRADecFrame, doc_components
 from .utils import EQUINOX_B1950
 
-__all__ = ["FK4", "FK4NoETerms"]
+__all__ = ["FK4", "FK4NoETerms", "FK4Frame", "FK4NoETermsFrame"]
 
 jd1950 = Time("B1950").jd
 
@@ -38,8 +38,35 @@ doc_footer_fk4 = """
 """
 
 
+@format_doc(base_doc_frame, footer=doc_footer_fk4)
+class FK4Frame(BaseRADecFrame):
+    """
+    A coordinate or frame in the FK4 system.
+
+    Note that this is a barycentric version of FK4 - that is, the origin for
+    this frame is the Solar System Barycenter, *not* the Earth geocenter.
+
+    The frame attributes are listed under **Other Parameters**.
+
+    NOTE:
+    This class only holds metadata defining the FK4 reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `FK4` class.    
+    """
+
+    name = "fk4"
+
+    equinox = TimeAttribute(default=EQUINOX_B1950, doc="The equinox time")
+    obstime = TimeAttribute(
+        default=None,
+        secondary_attribute="equinox",
+        doc="The reference time (e.g., time of observation)",
+    )
+
+
 @format_doc(base_doc, components=doc_components, footer=doc_footer_fk4)
-class FK4(BaseRADecFrame):
+class FK4(BaseCoordinateFrame, FK4Frame):
     """
     A coordinate or frame in the FK4 system.
 
@@ -48,13 +75,7 @@ class FK4(BaseRADecFrame):
 
     The frame attributes are listed under **Other Parameters**.
     """
-
-    equinox = TimeAttribute(default=EQUINOX_B1950, doc="The equinox time")
-    obstime = TimeAttribute(
-        default=None,
-        secondary_attribute="equinox",
-        doc="The reference time (e.g., time of observation)",
-    )
+    pass
 
 
 # the "self" transform
@@ -69,14 +90,22 @@ def fk4_to_fk4(fk4coord1, fk4frame2):
     return fnoe_w_eqx2.transform_to(fk4frame2)
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer_fk4)
-class FK4NoETerms(BaseRADecFrame):
+@format_doc(base_doc_frame, footer=doc_footer_fk4)
+class FK4NoETermsFrame(BaseRADecFrame):
     """
     A coordinate or frame in the FK4 system, but with the E-terms of aberration
     removed.
 
     The frame attributes are listed under **Other Parameters**.
+
+    NOTE:
+    This class only holds metadata defining the FK4NoETerms reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `FK4NoETerms` class.      
     """
+
+    name = "fk4noe"
 
     equinox = TimeAttribute(default=EQUINOX_B1950, doc="The equinox time")
     obstime = TimeAttribute(
@@ -124,6 +153,17 @@ class FK4NoETerms(BaseRADecFrame):
             @ rotation_matrix(theta, "y")
             @ rotation_matrix(-zeta, "z")
         )
+
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer_fk4)
+class FK4NoETerms(BaseCoordinateFrame, FK4NoETermsFrame):
+    """
+    A coordinate or frame in the FK4 system, but with the E-terms of aberration
+    removed.
+
+    The frame attributes are listed under **Other Parameters**.
+    """
+    pass
 
 
 # the "self" transform

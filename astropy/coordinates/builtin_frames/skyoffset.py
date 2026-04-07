@@ -4,7 +4,7 @@ from functools import cache
 
 from astropy import units as u
 from astropy.coordinates.attributes import CoordinateAttribute, QuantityAttribute
-from astropy.coordinates.baseframe import BaseCoordinateFrame, frame_transform_graph
+from astropy.coordinates.baseframe import BaseFrame, frame_transform_graph
 from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix
 from astropy.coordinates.transformations import (
     DynamicMatrixTransform,
@@ -95,7 +95,7 @@ def make_skyoffset_cls(framecls):
     return _SkyOffsetFramecls
 
 
-class SkyOffsetFrame(BaseCoordinateFrame):
+class SkyOffsetFrame(BaseFrame):
     """
     A frame which is relative to some specific position and oriented to match
     its frame.

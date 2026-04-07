@@ -16,7 +16,9 @@ from astropy.coordinates.attributes import (
 )
 from astropy.coordinates.baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     base_doc,
+    base_doc_frame,
     frame_transform_graph,
 )
 from astropy.coordinates.errors import ConvertError
@@ -27,7 +29,7 @@ from astropy.utils.state import ScienceState
 
 from .icrs import ICRS
 
-__all__ = ["Galactocentric"]
+__all__ = ["Galactocentric", "GalactocentricFrame"]
 
 
 # Measured by minimizing the difference between a plane of coordinates along
@@ -421,8 +423,112 @@ doc_footer = """
 """
 
 
+@format_doc(base_doc_frame, footer=doc_footer)
+class GalactocentricFrame(BaseFrame):
+    r"""
+    A coordinate or frame in the Galactocentric system.
+
+    This frame allows specifying the Sun-Galactic center distance, the height of
+    the Sun above the Galactic midplane, and the solar motion relative to the
+    Galactic center. However, as there is no modern standard definition of a
+    Galactocentric reference frame, it is important to pay attention to the
+    default values used in this class if precision is important in your code.
+    The default values of the parameters of this frame are taken from the
+    original definition of the frame in 2014. As such, the defaults are somewhat
+    out of date relative to recent measurements made possible by, e.g., Gaia.
+    The defaults can, however, be changed at runtime by setting the parameter
+    set name in `~astropy.coordinates.galactocentric_frame_defaults`.
+
+    The current default parameter set is ``"pre-v4.0"``, indicating that the
+    parameters were adopted before ``astropy`` version 4.0. A regularly-updated
+    parameter set can instead be used by setting
+    ``galactocentric_frame_defaults.set ('latest')``, and other parameter set
+    names may be added in future versions. To find out the scientific papers
+    that the current default parameters are derived from, use
+    ``galcen.frame_attribute_references`` (where ``galcen`` is an instance of
+    this frame), which will update even if the default parameter set is changed.
+
+    The position of the Sun is assumed to be on the x axis of the final,
+    right-handed system. That is, the x axis points from the position of
+    the Sun projected to the Galactic midplane to the Galactic center --
+    roughly towards :math:`(l,b) = (0^\circ,0^\circ)`. For the default
+    transformation (:math:`{\rm roll}=0^\circ`), the y axis points roughly
+    towards Galactic longitude :math:`l=90^\circ`, and the z axis points
+    roughly towards the North Galactic Pole (:math:`b=90^\circ`).
+
+    For a more detailed look at the math behind this transformation, see
+    the document :ref:`astropy:coordinates-galactocentric`.
+
+    The frame attributes are listed under **Other Parameters**.
+    
+    NOTE:
+    This class only holds metadata defining the Galactocentric reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `Galactocentric` class.  
+    """
+
+    name = "galactocentric"
+
+    default_representation = r.CartesianRepresentation
+    default_differential = r.CartesianDifferential
+
+    # frame attributes
+    galcen_coord = CoordinateAttribute(
+        frame=ICRS, doc="The coordinates of the Galactic center"
+    )
+    galcen_distance = QuantityAttribute(
+        unit=u.kpc, doc="The distance from the Sun to the Galactic center"
+    )
+
+    galcen_v_sun = CartesianRepresentationAttribute(
+        unit=u.km / u.s,
+        doc="The velocity of the Sun in the Galactocentric frame",
+    )
+
+    z_sun = QuantityAttribute(
+        unit=u.pc, doc="The distance from the Sun to the Galactic midplane"
+    )
+    roll = QuantityAttribute(
+        unit=u.deg, doc="The rotation angle relative to the orientation for Galactic"
+    )
+
+    def __init__(self, **kwargs):
+        # Set default frame attribute values based on the ScienceState instance
+        # for the solar parameters defined above
+        default_params = galactocentric_frame_defaults.get()
+        self.frame_attribute_references = (
+            galactocentric_frame_defaults.references.copy()
+        )
+
+        for k in default_params:
+            if k in kwargs:
+                # If a frame attribute is set by the user, remove its reference
+                self.frame_attribute_references.pop(k, None)
+
+            # Keep the frame attribute if it is set by the user, otherwise use
+            # the default value
+            kwargs[k] = kwargs.get(k, default_params[k])
+
+        super().__init__(**kwargs)
+
+    @classmethod
+    def get_roll0(cls):
+        """The additional roll angle (about the final x axis) necessary to align the
+        final z axis to match the Galactic yz-plane.  Setting the ``roll``
+        frame attribute to -this method's return value removes this rotation,
+        allowing the use of the `~astropy.coordinates.Galactocentric` frame
+        in more general contexts.
+
+        """
+        # note that the actual value is defined at the module level.  We make at
+        # a property here because this module isn't actually part of the public
+        # API, so it's better for it to be accessible from Galactocentric
+        return _ROLL0
+
+
 @format_doc(base_doc, components=doc_components, footer=doc_footer)
-class Galactocentric(BaseCoordinateFrame):
+class Galactocentric(BaseCoordinateFrame, GalactocentricFrame):
     r"""
     A coordinate or frame in the Galactocentric system.
 
@@ -459,30 +565,6 @@ class Galactocentric(BaseCoordinateFrame):
 
     The frame attributes are listed under **Other Parameters**.
     """
-
-    default_representation = r.CartesianRepresentation
-    default_differential = r.CartesianDifferential
-
-    # frame attributes
-    galcen_coord = CoordinateAttribute(
-        frame=ICRS, doc="The coordinates of the Galactic center"
-    )
-    galcen_distance = QuantityAttribute(
-        unit=u.kpc, doc="The distance from the Sun to the Galactic center"
-    )
-
-    galcen_v_sun = CartesianRepresentationAttribute(
-        unit=u.km / u.s,
-        doc="The velocity of the Sun in the Galactocentric frame",
-    )
-
-    z_sun = QuantityAttribute(
-        unit=u.pc, doc="The distance from the Sun to the Galactic midplane"
-    )
-    roll = QuantityAttribute(
-        unit=u.deg, doc="The rotation angle relative to the orientation for Galactic"
-    )
-
     def __init__(self, *args, **kwargs):
         # Set default frame attribute values based on the ScienceState instance
         # for the solar parameters defined above
@@ -501,20 +583,6 @@ class Galactocentric(BaseCoordinateFrame):
             kwargs[k] = kwargs.get(k, default_params[k])
 
         super().__init__(*args, **kwargs)
-
-    @classmethod
-    def get_roll0(cls):
-        """The additional roll angle (about the final x axis) necessary to align the
-        final z axis to match the Galactic yz-plane.  Setting the ``roll``
-        frame attribute to -this method's return value removes this rotation,
-        allowing the use of the `~astropy.coordinates.Galactocentric` frame
-        in more general contexts.
-
-        """
-        # note that the actual value is defined at the module level.  We make at
-        # a property here because this module isn't actually part of the public
-        # API, so it's better for it to be accessible from Galactocentric
-        return _ROLL0
 
 
 # ICRS to/from Galactocentric ----------------------->

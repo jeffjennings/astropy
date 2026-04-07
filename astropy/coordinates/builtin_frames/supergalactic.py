@@ -4,14 +4,16 @@ from astropy import units as u
 from astropy.coordinates import representation as r
 from astropy.coordinates.baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     RepresentationMapping,
     base_doc,
+    base_doc_frame,
 )
 from astropy.utils.decorators import format_doc
 
 from .galactic import Galactic
 
-__all__ = ["Supergalactic"]
+__all__ = ["Supergalactic", "SupergalacticFrame"]
 
 
 doc_components = """
@@ -35,13 +37,21 @@ doc_components = """
 """
 
 
-@format_doc(base_doc, components=doc_components, footer="")
-class Supergalactic(BaseCoordinateFrame):
+@format_doc(base_doc_frame, footer="")
+class SupergalacticFrame(BaseFrame):
     """
     Supergalactic Coordinates
     (see Lahav et al. 2000, <https://ui.adsabs.harvard.edu/abs/2000MNRAS.312..166L>,
     and references therein).
+
+    NOTE:
+    This class only holds metadata defining the Supergalactic reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `Supergalactic` class.      
     """
+
+    name = "supergalactic"
 
     frame_specific_representation_info = {
         r.SphericalRepresentation: [
@@ -66,3 +76,13 @@ class Supergalactic(BaseCoordinateFrame):
     # North supergalactic pole in Galactic coordinates.
     # Needed for transformations to/from Galactic coordinates.
     _nsgp_gal = Galactic(l=47.37 * u.degree, b=+6.32 * u.degree)
+
+
+@format_doc(base_doc, components=doc_components, footer="")
+class Supergalactic(BaseCoordinateFrame, SupergalacticFrame):
+    """
+    Supergalactic Coordinates
+    (see Lahav et al. 2000, <https://ui.adsabs.harvard.edu/abs/2000MNRAS.312..166L>,
+    and references therein).
+    """
+    pass
