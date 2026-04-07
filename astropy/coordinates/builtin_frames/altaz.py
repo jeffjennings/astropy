@@ -16,6 +16,7 @@ from astropy.coordinates.baseframe import (
     base_doc,
     base_doc_frame,
 )
+from astropy.coordinates.coordinate import BaseCoordinate
 from astropy.utils.decorators import format_doc
 
 __all__ = ["AltAz", "AltAzFrame"]
@@ -165,6 +166,18 @@ class AltAz(BaseCoordinateFrame, AltAzFrame):
         The zenith angle (or zenith distance / co-altitude) for this coordinate.
         """
         return _90DEG.to(self.alt.unit) - self.alt
+
+
+@BaseCoordinate.register_property("altaz")
+def secz(coord):
+    """Secant of the zenith angle, a common estimate of the airmass."""
+    return 1 / np.sin(coord.alt)
+
+
+@BaseCoordinate.register_property("altaz")
+def zen(coord):
+    """The zenith angle (or zenith distance / co-altitude)."""
+    return _90DEG.to(coord.alt.unit) - coord.alt
 
 
 # self-transform defined in icrs_observed_transforms.py
