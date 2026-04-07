@@ -6,6 +6,7 @@ classes.
 
 __all__ = [
     "BaseCoordinateFrame",
+    "BaseFrame",
     "CoordinateFrameInfo",
     "GenericFrame",
     "RepresentationMapping",
@@ -16,24 +17,24 @@ import copy
 import functools
 import operator
 import warnings
+from abc import ABC
 from collections import defaultdict
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, Union
 
 import numpy as np
 
 from astropy import units as u
-from astropy.table import QTable
 from astropy.units import Unit
 from astropy.utils import ShapedLikeNDArray
 from astropy.utils.data_info import MixinInfo
 from astropy.utils.decorators import format_doc
 from astropy.utils.exceptions import AstropyWarning
-from astropy.utils.masked import MaskableShapedLikeNDArray, combine_masks
+from astropy.utils.masked import MaskableShapedLikeNDArray
 
 from . import representation as r
-from .angles import Angle, Latitude, Longitude, angular_separation, position_angle
+from .angles import Angle, Latitude, Longitude
 from .attributes import Attribute
-from .distances import Distance
+from .coordinate import BaseCoordinate
 from .errors import (
     ConvertError,
     NonRotationTransformationError,
@@ -391,29 +392,32 @@ base_doc = """{__doc__}
     {footer}
 """
 
+base_doc_frame = "{__doc__}{footer}"
+"""Docstring template for data-less frame classes."""
+
 _components = """
     *args, **kwargs
         Coordinate components, with names that depend on the subclass.
 """
 
-
-@format_doc(base_doc, components=_components, footer="")
-class BaseCoordinateFrame(MaskableShapedLikeNDArray):
+@format_doc(base_doc_frame, footer="")
+class BaseFrame(ABC):
     """
-    The base class for coordinate frames.
+    The base class for data-less reference frame classes.
 
-    This class is intended to be subclassed to create instances of specific
-    systems.  Subclasses can implement the following attributes:
+    This class is intended to be subclassed to create data-less frame instances
+    for specific coordinate systems.  Subclasses can implement the following
+    attributes:
 
     * `default_representation`
         A subclass of `~astropy.coordinates.BaseRepresentation` that will be
         treated as the default representation of this frame.  This is the
-        representation assumed by default when the frame is created.
+        representation assumed by default when coordinate data is attached.
 
     * `default_differential`
         A subclass of `~astropy.coordinates.BaseDifferential` that will be
         treated as the default differential class of this frame.  This is the
-        differential class assumed by default when the frame is created.
+        differential class assumed by default when coordinate data is attached.
 
     * `~astropy.coordinates.Attribute` class attributes
        Frame attributes such as ``FK4.equinox`` or ``FK4.obstime`` are defined
@@ -446,12 +450,8 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
         dict[type[r.BaseRepresentationOrDifferential], list[RepresentationMapping]]
     ] = {}
 
+    # Default empty frame_attricutes dict
     frame_attributes: dict[str, Attribute] = {}
-    # Default empty frame_attributes dict
-
-    # Declare that BaseCoordinateFrame can be used as a Table column by defining
-    # the info property.
-    info = CoordinateFrameInfo()
 
     def __init_subclass__(cls, **kwargs):
         # We first check for explicitly set values for these:
@@ -462,13 +462,42 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
         # have to check for cases where the attribute names have already been
         # replaced by underscore-prefaced equivalents by the logic below:
         if default_repr is None or isinstance(default_repr, property):
-            default_repr = getattr(cls, "_default_representation", None)
+            # TODO: APE23: simplify when deprecate BaseCoordinateFrame
+            for _base in cls.__mro__[1:]:
+                if _base.__name__ == "BaseCoordinateFrame":
+                    continue
+                _val = _base.__dict__.get("_default_representation")
+                if _val is not None:
+                    default_repr = _val
+                    break
+            else:
+                if isinstance(default_repr, property):
+                    default_repr = None
 
         if default_diff is None or isinstance(default_diff, property):
-            default_diff = getattr(cls, "_default_differential", None)
+            # TODO: APE23: simplify when deprecate BaseCoordinateFrame
+            for _base in cls.__mro__[1:]:
+                if _base.__name__ == "BaseCoordinateFrame":
+                    continue
+                _val = _base.__dict__.get("_default_differential")
+                if _val is not None:
+                    default_diff = _val
+                    break
+            else:
+                if isinstance(default_diff, property):
+                    default_diff = None
 
         if repr_info is None or isinstance(repr_info, property):
-            repr_info = getattr(cls, "_frame_specific_representation_info", None)
+            # TODO: APE23: simplify when deprecate BaseCoordinateFrame
+            for _base in cls.__mro__[1:]:
+                if _base.__name__ == "BaseCoordinateFrame":
+                    continue
+                _val = _base.__dict__.get("_frame_specific_representation_info")
+                if _val:
+                    repr_info = _val
+                    break
+            else:
+                repr_info = getattr(cls, "_frame_specific_representation_info", None)
 
         repr_info = cls._infer_repr_info(repr_info)
 
@@ -503,7 +532,7 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
         # classes?
         frame_attrs = {}
         for basecls in reversed(cls.__bases__):
-            if issubclass(basecls, BaseCoordinateFrame):
+            if issubclass(basecls, BaseFrame):
                 frame_attrs.update(basecls.frame_attributes)
 
         frame_attrs |= {k: v for k, v in vars(cls).items() if isinstance(v, Attribute)}
@@ -513,10 +542,10 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
         # Deal with setting the name of the frame:
         if not hasattr(cls, "name"):
             cls.name = cls.__name__.lower()
-        elif BaseCoordinateFrame not in cls.__bases__ and cls.name in [
+        elif BaseFrame not in cls.__bases__ and cls.name in [
             getattr(base, "name", None) for base in cls.__bases__
         ]:
-            # This may be a subclass of a subclass of BaseCoordinateFrame,
+            # This may be a subclass of a subclass of BaseFrame,
             # like ICRS(BaseRADecFrame). In this case, cls.name will have been
             # set by init_subclass
             cls.name = cls.__name__.lower()
@@ -534,7 +563,7 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
 
     def __init__(
         self,
-        *args,
+        *,
         copy=True,
         representation_type=None,
         differential_type=None,
@@ -545,12 +574,10 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
         self._representation = self._infer_representation(
             representation_type, differential_type
         )
-        data = self._infer_data(args, copy, kwargs)  # possibly None.
-
-        shapes = [] if data is None else [data.shape]
 
         # Set frame attributes, if any.
         # Keep track of their shapes, but do not broadcast them yet.
+        shapes = []
         values = {}
         for fnm, fdefault in self.get_frame_attr_defaults().items():
             # Read-only frame attributes are defined as FrameAttribute
@@ -573,48 +600,19 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
                 f"keywords: {list(kwargs)}"
             )
 
-        # Determine the overall shape of the frame.
+        # Determine the overall shape of the frame from attributes only.
         try:
             self._shape = np.broadcast_shapes(*shapes)
         except ValueError as exc:
             exc.add_note(
-                f"non-scalar data and/or attributes with inconsistent shapes: {shapes}",
+                f"non-scalar frame attributes with inconsistent shapes: {shapes}",
             )
             raise exc
 
-        # Broadcast the data if necessary and set it
-        if data is not None and data.shape != self._shape:
-            try:
-                # if broadcasting isn't strictly needed, avoid it
-                # see https://github.com/astropy/astropy/issues/16219
-                data = data.reshape(self._shape)
-            except Exception:
-                data = np.broadcast_to(data, shape=self._shape, subok=True)
-                if copy:
-                    data = data.copy()
-        self._data = data
         # Broadcast the attributes if necessary by getting them again
         # (we now know the shapes will be OK).
         for key in values:
             getattr(self, key)
-
-        # The logic of this block is not related to the previous one
-        if self.has_data:
-            # This makes the cache keys backwards-compatible, but also adds
-            # support for having differentials attached to the frame data
-            # representation object.
-            if "s" in self._data.differentials:
-                # TODO: assumes a velocity unit differential
-                key = (
-                    self._data.__class__.__name__,
-                    self._data.differentials["s"].__class__.__name__,
-                    False,
-                )
-            else:
-                key = (self._data.__class__.__name__, False)
-
-            # Set up representation cache.
-            self.cache["representation"][key] = self._data
 
     def _infer_representation(self, representation_type, differential_type):
         if representation_type is None and differential_type is None:
@@ -643,169 +641,6 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
                 differential_type = {"s": "base"}  # see set_representation_cls()
 
         return _get_repr_classes(representation_type, **differential_type)
-
-    def _infer_data(self, args, copy, kwargs):
-        # if not set below, this is a frame with no data
-        representation_data = None
-        differential_data = None
-
-        args = list(args)  # need to be able to pop them
-        if args and (isinstance(args[0], r.BaseRepresentation) or args[0] is None):
-            representation_data = args.pop(0)  # This can still be None
-            if len(args) > 0:
-                raise TypeError(
-                    "Cannot create a frame with both a representation object "
-                    "and other positional arguments"
-                )
-
-            if representation_data is not None:
-                diffs = representation_data.differentials
-                differential_data = diffs.get("s", None)
-                if (differential_data is None and len(diffs) > 0) or (
-                    differential_data is not None and len(diffs) > 1
-                ):
-                    raise ValueError(
-                        "Multiple differentials are associated with the representation"
-                        " object passed in to the frame initializer. Only a single"
-                        f" velocity differential is supported. Got: {diffs}"
-                    )
-
-        else:
-            representation_cls = self.get_representation_cls()
-            # Get any representation data passed in to the frame initializer
-            # using keyword or positional arguments for the component names
-            repr_kwargs = {}
-            for nmkw, nmrep in self.representation_component_names.items():
-                if len(args) > 0:
-                    # first gather up positional args
-                    repr_kwargs[nmrep] = args.pop(0)
-                elif nmkw in kwargs:
-                    repr_kwargs[nmrep] = kwargs.pop(nmkw)
-
-            # special-case the Spherical->UnitSpherical if no `distance`
-
-            if repr_kwargs:
-                # TODO: determine how to get rid of the part before the "try" -
-                # currently removing it has a performance regression for
-                # unitspherical because of the try-related overhead.
-                # Also frames have no way to indicate what the "distance" is
-                if repr_kwargs.get("distance", True) is None:
-                    del repr_kwargs["distance"]
-
-                if (
-                    issubclass(representation_cls, r.SphericalRepresentation)
-                    and "distance" not in repr_kwargs
-                ):
-                    representation_cls = representation_cls._unit_representation
-
-                try:
-                    representation_data = representation_cls(copy=copy, **repr_kwargs)
-                except TypeError as e:
-                    # this except clause is here to make the names of the
-                    # attributes more human-readable.  Without this the names
-                    # come from the representation instead of the frame's
-                    # attribute names.
-                    try:
-                        representation_data = representation_cls._unit_representation(
-                            copy=copy, **repr_kwargs
-                        )
-                    except Exception:
-                        msg = str(e)
-                        names = self.get_representation_component_names()
-                        for frame_name, repr_name in names.items():
-                            msg = msg.replace(repr_name, frame_name)
-                        msg = msg.replace("__init__()", f"{self.__class__.__name__}()")
-                        e.args = (msg,)
-                        raise e
-
-            # Now we handle the Differential data:
-            # Get any differential data passed in to the frame initializer
-            # using keyword or positional arguments for the component names
-            differential_cls = self.get_representation_cls("s")
-            diff_component_names = self.get_representation_component_names("s")
-            diff_kwargs = {}
-            for nmkw, nmrep in diff_component_names.items():
-                if len(args) > 0:
-                    # first gather up positional args
-                    diff_kwargs[nmrep] = args.pop(0)
-                elif nmkw in kwargs:
-                    diff_kwargs[nmrep] = kwargs.pop(nmkw)
-
-            if diff_kwargs:
-                if (
-                    hasattr(differential_cls, "_unit_differential")
-                    and "d_distance" not in diff_kwargs
-                ):
-                    differential_cls = differential_cls._unit_differential
-
-                elif len(diff_kwargs) == 1 and "d_distance" in diff_kwargs:
-                    differential_cls = r.RadialDifferential
-
-                try:
-                    differential_data = differential_cls(copy=copy, **diff_kwargs)
-                except TypeError as e:
-                    # this except clause is here to make the names of the
-                    # attributes more human-readable.  Without this the names
-                    # come from the representation instead of the frame's
-                    # attribute names.
-                    msg = str(e)
-                    names = self.get_representation_component_names("s")
-                    for frame_name, repr_name in names.items():
-                        msg = msg.replace(repr_name, frame_name)
-                    msg = msg.replace("__init__()", f"{self.__class__.__name__}()")
-                    e.args = (msg,)
-                    raise
-
-        if len(args) > 0:
-            raise TypeError(
-                f"{type(self).__name__}.__init__ had {len(args)} remaining "
-                "unhandled arguments"
-            )
-
-        if representation_data is None and differential_data is not None:
-            raise ValueError(
-                "Cannot pass in differential component data "
-                "without positional (representation) data."
-            )
-
-        if differential_data:
-            # Check that differential data provided has units compatible
-            # with time-derivative of representation data.
-            # NOTE: there is no dimensionless time while lengths can be
-            # dimensionless (u.dimensionless_unscaled).
-            for comp in representation_data.components:
-                if (diff_comp := f"d_{comp}") in differential_data.components:
-                    current_repr_unit = representation_data._units[comp]
-                    current_diff_unit = differential_data._units[diff_comp]
-                    expected_unit = current_repr_unit / u.s
-                    if not current_diff_unit.is_equivalent(expected_unit):
-                        for (
-                            key,
-                            val,
-                        ) in self.get_representation_component_names().items():
-                            if val == comp:
-                                current_repr_name = key
-                                break
-                        for key, val in self.get_representation_component_names(
-                            "s"
-                        ).items():
-                            if val == diff_comp:
-                                current_diff_name = key
-                                break
-                        raise ValueError(
-                            f'{current_repr_name} has unit "{current_repr_unit}" with'
-                            f' physical type "{current_repr_unit.physical_type}", but'
-                            f" {current_diff_name} has incompatible unit"
-                            f' "{current_diff_unit}" with physical type'
-                            f' "{current_diff_unit.physical_type}" instead of the'
-                            f' expected "{(expected_unit).physical_type}".'
-                        )
-
-            representation_data = representation_data.with_differentials(
-                {"s": differential_data}
-            )
-
-        return representation_data
 
     @classmethod
     def _infer_repr_info(cls, repr_info):
@@ -891,117 +726,6 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
 
         setattr(cls, private_attr, value)
         setattr(cls, attr_name, property(getter, doc=doc))
-
-    @functools.cached_property
-    def cache(self):
-        """Cache for this frame, a dict.
-
-        It stores anything that should be computed from the coordinate data (*not* from
-        the frame attributes). This can be used in functions to store anything that
-        might be expensive to compute but might be reused by some other function.
-        E.g.::
-
-            if 'user_data' in myframe.cache:
-                data = myframe.cache['user_data']
-            else:
-                myframe.cache['user_data'] = data = expensive_func(myframe.lat)
-
-        If in-place modifications are made to the frame data, the cache should
-        be cleared::
-
-            myframe.cache.clear()
-
-        """
-        return defaultdict(dict)
-
-    @property
-    def data(self):
-        """
-        The coordinate data for this object.  If this frame has no data,
-        a `ValueError` will be raised.  Use `has_data` to
-        check if data is present on this frame object.
-        """
-        if self._data is None:
-            raise ValueError(
-                f'The frame object "{self!r}" does not have associated data'
-            )
-        return self._data
-
-    @property
-    def has_data(self):
-        """
-        True if this frame has `data`, False otherwise.
-        """
-        return self._data is not None
-
-    @property
-    def shape(self):
-        return self._shape
-
-    def __bool__(self):
-        return self.has_data and self.size > 0
-
-    @property
-    def size(self):
-        return self.data.size
-
-    @property
-    def masked(self):
-        """Whether the underlying data is masked.
-
-        Raises
-        ------
-        ValueError
-            If the frame has no associated data.
-        """
-        return self.data.masked
-
-    def get_mask(self, *attrs):
-        """Get the mask associated with these coordinates.
-
-        Parameters
-        ----------
-        *attrs : str
-            Attributes from which to get the masks to combine. Items can be
-            dotted, like ``"data.lon", "data.lat"``. By default, get the
-            combined mask of all components (including from differentials),
-            ignoring possible masks of attributes.
-
-        Returns
-        -------
-        mask : ~numpy.ndarray of bool
-            The combined, read-only mask. If the instance is not masked, it
-            is an array of `False` with the correct shape.
-
-        Raises
-        ------
-        ValueError
-            If the coordinate frame has no associated data.
-
-        """
-        if attrs:
-            values = operator.attrgetter(*attrs)(self)
-            if not isinstance(values, tuple):
-                values = (values,)
-            masks = [getattr(v, "mask", None) for v in values]
-        elif self.data.masked:
-            masks = [diff.mask for diff in self.data.differentials.values()]
-            masks.append(self.data.mask)
-        else:
-            # Short-cut if the data is not masked.
-            masks = []
-
-        # Broadcast makes it readonly too.
-        return np.broadcast_to(combine_masks(masks), self.shape)
-
-    mask = property(
-        get_mask,
-        doc="""The mask associated with these coordinates.
-
-    Combines the masks of all components of the underlying representation,
-    including possible differentials.
-    """,
-    )
 
     @classmethod
     def get_frame_attr_defaults(cls):
@@ -1138,6 +862,197 @@ class BaseCoordinateFrame(MaskableShapedLikeNDArray):
     representation_component_names = property(get_representation_component_names)
 
     representation_component_units = property(get_representation_component_units)
+
+    def is_frame_attr_default(self, attrnm):
+        """
+        Returns True if the frame attribute ``attrnm`` has its
+        value set to the default.
+
+        Parameters
+        ----------
+        attrnm : str
+            Frame attribute to check.
+        """
+        return attrnm in self._attr_names_with_defaults
+
+    @staticmethod
+    def _frameattr_equiv(left_fattr, right_fattr):  # noqa: PLR0911
+        """
+        Determine if two frame attributes (representations, coordinate attributes) are 
+        equivalent.
+        """
+        if left_fattr is right_fattr:
+            return True
+        elif left_fattr is None or right_fattr is None:
+            return False
+
+        left_is_repr = isinstance(left_fattr, r.BaseRepresentationOrDifferential)
+        if left_is_repr ^ isinstance(right_fattr, r.BaseRepresentationOrDifferential):
+            return False
+        if left_is_repr:
+            # both are representations
+            if getattr(left_fattr, "differentials", False) or getattr(
+                right_fattr, "differentials", False
+            ):
+                warnings.warn(
+                    "Two representation frame attributes were checked for equivalence"
+                    " when at least one of them has differentials. This yields False"
+                    " even if the underlying representations are equivalent",
+                    AstropyWarning,
+                )
+                return False
+            return np.all(
+                left_fattr == right_fattr
+                if type(left_fattr) is type(right_fattr)
+                else left_fattr.to_cartesian() == right_fattr.to_cartesian()
+            )
+
+        left_is_coord = isinstance(left_fattr, BaseCoordinateFrame)
+        if left_is_coord ^ isinstance(right_fattr, BaseCoordinateFrame):
+            return False
+        if left_is_coord:
+            # both are coordinates
+            return left_fattr.is_equivalent_frame(right_fattr) and np.all(
+                left_fattr == right_fattr
+            )
+
+        return np.all(left_fattr == right_fattr)
+
+    def is_equivalent_frame(self, other):
+        """
+        Check if this object is the same frame as the ``other`` object.
+
+        To be the same frame, two objects must be the same frame class and have
+        the same frame attributes. Their data does not need to match.
+
+        Parameters
+        ----------
+        other : :class:`~astropy.coordinates.BaseFrame`
+            The frame to check against
+
+        Returns
+        -------
+        isequiv : bool
+            True if the frames are equivalent
+
+        Raises
+        ------
+        TypeError
+            If ``other`` is not a `~astropy.coordinates.BaseFrame` or subclass.
+        """
+        self_type = type(self)
+        other_type = type(other)
+        # TODO: APE23: simplify when deprecate BaseCoordinateFrame
+        if self_type == other_type or (
+            isinstance(other, BaseFrame)
+            and (
+                issubclass(self_type, other_type)
+                or issubclass(other_type, self_type)
+            )
+            and not (
+                issubclass(self_type, BaseCoordinateFrame)
+                and issubclass(other_type, BaseCoordinateFrame)
+            )
+        ):
+            return all(
+                self._frameattr_equiv(getattr(self, attr), getattr(other, attr))
+                for attr in self.frame_attributes
+            )
+        elif not isinstance(other, BaseFrame):
+            raise TypeError(
+                "Tried to do is_equivalent_frame on something that isn't a frame"
+            )
+        else:
+            return False
+
+    def _frame_attrs_repr(self):
+        """
+        Returns a string representation of the frame's attributes, if any.
+        """
+        attr_strs = []
+        for attribute_name in self.frame_attributes:
+            attr = getattr(self, attribute_name)
+            # Check if this object has a way of representing itself
+            # specific to being an attribute of a frame
+            if hasattr(attr, "_astropy_repr_in_frame"):
+                attrstr = attr._astropy_repr_in_frame()
+            else:
+                attrstr = str(attr)
+            attr_strs.append(f"{attribute_name}={attrstr}")
+
+        return ", ".join(attr_strs)
+
+    def __repr__(self):
+        frameattrs = self._frame_attrs_repr()
+        if frameattrs:
+            frameattrs = f" ({frameattrs})"
+        return f"<{self.__class__.__name__} Frame{frameattrs}>"
+
+    def is_transformable_to(self, new_frame):
+        """Return True if there is a registered transform to ``new_frame``.
+
+        Returns ``'same'`` if ``new_frame`` is the same class as this frame
+        but no explicit transform is registered.
+        """
+        new_cls = new_frame if isinstance(new_frame, type) else type(new_frame)
+        if frame_transform_graph.get_transform(type(self), new_cls):
+            return True
+        return "same" if new_cls is type(self) else False
+
+    def transform_data_to(self, frame, data):
+        """
+        Transform ``BaseRepresentation`` data from this frame to another frame.
+
+        Uses the coordinate transform graph to find the right transformation. 
+        Supports `~astropy.coordinates.RepresentationFunctionTransform` transforms and
+        legacy `~astropy.coordinates.FunctionTransform` transforms.
+
+        Parameters
+        ----------
+        frame : BaseFrame instance
+            The target data-less frame.
+        data : BaseRepresentation
+            The coordinate data in this frame.
+
+        Returns
+        -------
+        BaseRepresentation
+            The data transformed into the target frame.
+        """
+        from astropy.coordinates.transformations import RepresentationFunctionTransform
+
+        trans = frame_transform_graph.get_transform(type(self), type(frame))
+        if trans is None:
+            raise ConvertError(
+                f"Cannot transform from {type(self).__name__} "
+                f"to {type(frame).__name__}"
+            )
+
+        if isinstance(trans, RepresentationFunctionTransform):
+            from astropy.coordinates.coordinate import Coordinate
+            coord = Coordinate(frame=self, data=data)
+            result = trans(coord, frame)
+            return result.data
+        else:
+            # TODO: APE23: simplify when deprecated BaseCoordinateFrame
+            if isinstance(self, BaseCoordinateFrame):
+                legacy_from = self.realize_frame(data)
+            else:
+                # self is a data-less *Frame class — build the legacy subclass
+                fa = {k: getattr(self, k) for k in type(self).frame_attributes}
+                for sub in type(self).__subclasses__():
+                    if issubclass(sub, BaseCoordinateFrame):
+                        legacy_from = sub(data, **fa)
+                        break
+                else:
+                    raise ConvertError(
+                        f"No legacy BaseCoordinateFrame subclass found for "
+                        f"{type(self).__name__}; cannot apply legacy transform."
+                    )
+            result = trans(legacy_from, frame)
+            return result.data
+
+
 
     def _replicate(self, data, copy=False, **kwargs):
         """Base for replicating a frame, with possibly different attributes.
