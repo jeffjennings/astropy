@@ -1,5 +1,4 @@
 import copy
-import operator
 import re
 import warnings
 from collections.abc import Callable
@@ -13,15 +12,18 @@ from astropy.constants import c as speed_of_light
 from astropy.time import Time
 from astropy.utils import ShapedLikeNDArray
 from astropy.utils.exceptions import AstropyUserWarning
-from astropy.utils.masked import MaskableShapedLikeNDArray, combine_masks
+from astropy.utils.masked import MaskableShapedLikeNDArray
 
 from .angles import Angle, offset_by
 from .baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     CoordinateFrameInfo,
     GenericFrame,
     frame_transform_graph,
 )
+from .coordinate import BaseCoordinate
+from .coordinate import Coordinate
 from .builtin_frames import SkyOffsetFrame
 from .distances import Distance
 from .errors import ConvertError
@@ -39,6 +41,50 @@ from .sky_coordinate_parsers import (
 __all__ = ["SkyCoord", "SkyCoordInfo"]
 
 
+# TODO: APE23: once BaseCoordinateFrame is deprecated, remove _split_bcf
+def _split_bcf(bcf, copy=True):
+    """Split a `~astropy.coordinates.BaseCoordinateFrame` into
+    ``(dataless_frame, representation)``.
+
+    Finds the corresponding dataless ``BaseFrame`` subclass 
+    (e.g., ``ICRSFrame`` from ``ICRS``), instantiates it with the
+    BaseCoordinateFrame's frame attributes, and returns it along with the 
+    BaseCoordinateFrame's data.
+    """
+    for cls in type(bcf).__mro__:
+        if (
+            cls is not BaseFrame
+            and issubclass(cls, BaseFrame)
+            and not issubclass(cls, BaseCoordinateFrame)
+        ):
+
+            frame_attrs = {
+                k: getattr(bcf, k)
+                for k in type(bcf).frame_attributes
+                if not bcf.is_frame_attr_default(k)
+            }
+
+            dataless = cls(
+                representation_type=bcf.representation_type,
+                differential_type=bcf.differential_type,
+                **frame_attrs,
+            )
+            break
+    else:
+        frame_attrs = {
+            k: getattr(bcf, k)
+            for k in type(bcf).frame_attributes
+            if not bcf.is_frame_attr_default(k)
+        }
+        dataless = type(bcf)(
+            representation_type=bcf.representation_type,
+            differential_type=bcf.differential_type,
+            **frame_attrs,
+        )
+    data = bcf.data.copy() if copy else bcf.data
+    return dataless, data
+
+
 class SkyCoordInfo(CoordinateFrameInfo):
     # Information for a SkyCoord is almost identical to that of a frame;
     # we only need to add the name of the frame used underneath.
@@ -49,7 +95,7 @@ class SkyCoordInfo(CoordinateFrameInfo):
         return out
 
 
-class SkyCoord(MaskableShapedLikeNDArray):
+class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
     """High-level object providing a flexible interface for celestial coordinate
     representation, manipulation, and transformation between systems.
 
@@ -172,6 +218,10 @@ class SkyCoord(MaskableShapedLikeNDArray):
     # info property.
     info = SkyCoordInfo()
 
+    # TODO: APE23: once BaseCoordinateFrame is deprecated, remove has_data and just 
+    # check if self._frame is None
+    has_data = True
+
     # Methods implemented by the underlying frame
     position_angle: Callable[[Union[BaseCoordinateFrame, "SkyCoord"]], Angle]
     separation: Callable[[Union[BaseCoordinateFrame, "SkyCoord"]], Angle]
@@ -182,6 +232,14 @@ class SkyCoord(MaskableShapedLikeNDArray):
         # the frame object this SkyCoord contains
         self._extra_frameattr_names = set()
 
+        if len(args) == 1 and isinstance(args[0], Coordinate):
+            coord = args[0]
+            self._frame = coord.frame
+            self._data = coord.data.copy() if copy else coord.data
+            for attr, val in kwargs.items():
+                setattr(self, attr, val)
+            return
+        
         # If all that is passed in is a frame instance that already has data,
         # we should bypass all of the parsing and logic below. This is here
         # to make this the fastest way to create a SkyCoord instance. Many of
@@ -201,97 +259,167 @@ class SkyCoord(MaskableShapedLikeNDArray):
                 for attr_name in self._extra_frameattr_names:
                     # Setting it will also validate it.
                     setattr(self, attr_name, getattr(coords, attr_name))
-
-                coords = coords.frame
+                self._frame = coords._frame
+                self._data = coords._data.copy() if copy else coords._data
+                return
 
             if not coords.has_data:
                 raise ValueError(
                     "Cannot initialize from a coordinate frame "
                     "instance without coordinate data"
                 )
-
-            if copy:
-                self._sky_coord_frame = coords.copy()
-            else:
-                self._sky_coord_frame = coords
+            self._frame, self._data = _split_bcf(coords, copy=copy)
 
         else:
-            # Get the frame instance without coordinate data but with all frame
-            # attributes set - these could either have been passed in with the
-            # frame as an instance, or passed in as kwargs here
+            # TODO: APE23: simplify once BaseCoordinateFrame is deprecated
+            _dataless_frame_input = None
+            frame_arg = kwargs.get("frame", None)
+            if (
+                isinstance(frame_arg, BaseFrame)
+                and not isinstance(frame_arg, BaseCoordinateFrame)
+            ):
+                _dataless_frame_input = frame_arg
+                for sub in type(_dataless_frame_input).__subclasses__():
+                    if issubclass(sub, BaseCoordinateFrame):
+                        kwargs["frame"] = sub
+                        break
+                else:
+                    raise ValueError(
+                        "No legacy frame class found for "
+                        f"{type(_dataless_frame_input).__name__}"
+                    )
+                for attr_name in type(_dataless_frame_input).frame_attributes:
+                    if _dataless_frame_input.is_frame_attr_default(attr_name):
+                        continue
+                    frame_val = getattr(_dataless_frame_input, attr_name)
+                    if attr_name not in kwargs:
+                        kwargs[attr_name] = frame_val
+                    elif np.any(frame_val != kwargs[attr_name]):
+                        raise ValueError(
+                            f"Frame attribute '{attr_name}' has conflicting values"
+                            " between the input coordinate data and either keyword"
+                            " arguments or the frame specification (frame=...):"
+                            f" {frame_val} =/= {kwargs[attr_name]}"
+                        )
+
             frame_cls, frame_kwargs = _get_frame_without_data(args, kwargs)
 
-            # Parse the args and kwargs to assemble a sanitized and validated
-            # kwargs dict for initializing attributes for this object and for
-            # creating the internal self._sky_coord_frame object
             args = list(args)  # Make it mutable
             skycoord_kwargs, components, info = _parse_coordinate_data(
                 frame_cls(**frame_kwargs), args, kwargs
             )
 
-            # In the above two parsing functions, these kwargs were identified
-            # as valid frame attributes for *some* frame, but not the frame that
-            # this SkyCoord will have. We keep these attributes as special
-            # skycoord frame attributes:
             for attr in skycoord_kwargs:
-                # Setting it will also validate it.
                 setattr(self, attr, skycoord_kwargs[attr])
 
             if info is not None:
                 self.info = info
 
-            # Finally make the internal coordinate object.
             frame_kwargs.update(components)
-            self._sky_coord_frame = frame_cls(copy=copy, **frame_kwargs)
+            bcf = frame_cls(copy=copy, **frame_kwargs)
 
-            if not self._sky_coord_frame.has_data:
+            if not bcf.has_data:
                 raise ValueError("Cannot create a SkyCoord without data")
+
+            if _dataless_frame_input is not None:
+                self._frame = _dataless_frame_input
+                self._data = bcf.data.copy() if copy else bcf.data
+            else:
+                self._frame, self._data = _split_bcf(bcf, copy=copy)
+
+    @property
+    def cache(self):
+        """Cache for this SkyCoord.
+
+        Used to store computed representations so that repeated accesses to
+        attributes like ``.ra`` and ``.dec`` only compute the underlying
+        representation once.  The cache is cleared whenever the coordinate
+        data are mutated in-place (e.g. via `__setitem__`).
+        """
+        if "_cache" not in self.__dict__:
+            from collections import defaultdict
+            self.__dict__["_cache"] = defaultdict(dict)
+        return self.__dict__["_cache"]
 
     @property
     def frame(self):
-        return self._sky_coord_frame
+        """The coordinate frame as a `~astropy.coordinates.BaseCoordinateFrame`
+        instance that includes the coordinate data.
+
+        During the deprecation cycle, this always returns a BaseCoordinateFrame instance 
+        with data (e.g. ``ICRS(ra=..., dec=...)``, not the internal
+        ``ICRSFrame()``).  Internal code that needs the data-less
+        frame should use ``self._frame``.
+        """
+        # TODO: APE23: once BaseCoordinateFrame is deprecated, replace function with:
+        # def frame(self):
+        #     return self._frame
+        bcf_frame = self.cache.get("frame", {}).get("bcf")
+        if bcf_frame is not None:
+            return bcf_frame
+
+        if isinstance(self._frame, BaseCoordinateFrame):
+            bcf_frame = self._frame.realize_frame(self._data, copy=False)
+        else:
+            for sub in type(self._frame).__subclasses__():
+                if issubclass(sub, BaseCoordinateFrame):
+                    fa = {
+                        k: getattr(self._frame, k)
+                        for k in type(self._frame).frame_attributes
+                        if not self._frame.is_frame_attr_default(k)
+                    }
+                    try:
+                        bcf_frame = sub(
+                            self._data,
+                            copy=False,
+                            representation_type=self._frame.representation_type,
+                            differential_type=self._frame.differential_type,
+                            **fa,
+                        )
+                        break
+                    except Exception:
+                        pass
+            if bcf_frame is None:
+                bcf_frame = self._frame
+
+        self.cache.setdefault("frame", {})["bcf"] = bcf_frame
+        return bcf_frame
+
+    @property
+    def data(self):
+        return self._data
+
+    def __replace__(self, **changes):
+        """Return a copy with specified fields replaced."""
+        frame = changes.get("frame", self.frame)
+        data = changes.get("data", self.data)
+        extra = {a: getattr(self, a) for a in self._extra_frameattr_names}
+        extra.update(
+            {k: v for k, v in changes.items() if k not in ("frame", "data")}
+        )
+        return self.__class__(data, frame=frame, **extra)
 
     @property
     def representation_type(self):
-        return self.frame.representation_type
+        return self._frame.representation_type
 
     @representation_type.setter
     def representation_type(self, value):
-        self.frame.representation_type = value
+        self._frame.representation_type = value
+        self.cache.clear()
+
+    @property
+    def differential_type(self):
+        return self._frame.differential_type
+
+    @differential_type.setter
+    def differential_type(self, value):
+        self._frame.differential_type = value
+        self.cache.clear()
 
     @property
     def shape(self):
-        return self.frame.shape
-
-    # The following 3 have identical implementation as in BaseCoordinateFrame,
-    # but we cannot just rely on __getattr__ to get them from the frame,
-    # because (1) get_mask has to be able to access our own attributes, and
-    # (2) masked and mask are abstract properties in MaskableSharedLikeNDArray
-    # which thus need to be explicitly defined.
-    # TODO: factor out common methods and attributes in a mixin class.
-    @property
-    def masked(self):
-        return self.data.masked
-
-    def get_mask(self, *attrs):
-        if not attrs:
-            # Just use the frame
-            return self._sky_coord_frame.get_mask()
-
-        values = operator.attrgetter(*attrs)(self)
-        if not isinstance(values, tuple):
-            values = (values,)
-        masks = [getattr(v, "mask", None) for v in values]
-        # Broadcast makes it readonly too.
-        return np.broadcast_to(combine_masks(masks), self.shape)
-
-    @property
-    def mask(self):
-        return self._sky_coord_frame.mask
-
-    masked.__doc__ = BaseCoordinateFrame.masked.__doc__
-    get_mask.__doc__ = BaseCoordinateFrame.get_mask.__doc__
-    mask.__doc__ = BaseCoordinateFrame.mask.__doc__
+        return self._data.shape
 
     def __eq__(self, value):
         """Equality operator for SkyCoord.
@@ -300,18 +428,32 @@ class SkyCoord(MaskableShapedLikeNDArray):
         equivalent, extra frame attributes are equivalent, and that the
         representation data are exactly equal.
         """
+        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated        
         if isinstance(value, BaseCoordinateFrame):
             if value._data is None:
-                raise ValueError("Can only compare SkyCoord to Frame with data")
-
-            return self.frame == value
+                raise ValueError("Can only compare SkyCoord to Frame with data")            
+            frame_equiv = (
+                type(self._frame) == type(value)
+                or issubclass(type(value), type(self._frame))
+            ) and all(
+                BaseCoordinateFrame._frameattr_equiv(
+                    getattr(self._frame, a), getattr(value, a)
+                )
+                for a in type(self._frame).frame_attributes
+            )
+            if not frame_equiv:
+                raise TypeError(
+                    "Cannot compare: objects must have equivalent frames: "
+                    f"{self._frame!r} vs. {value.replicate_without_data()!r}"
+                )
+            return self._data == value.data
 
         if not isinstance(value, SkyCoord):
             return NotImplemented
 
         # Make sure that any extra frame attribute names are equivalent.
         for attr in self._extra_frameattr_names | value._extra_frameattr_names:
-            if not self.frame._frameattr_equiv(
+            if not BaseCoordinateFrame._frameattr_equiv(
                 getattr(self, attr), getattr(value, attr)
             ):
                 raise ValueError(
@@ -319,10 +461,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
                     " (perhaps compare the frames directly to avoid this exception)"
                 )
 
-        return self._sky_coord_frame == value._sky_coord_frame
-
-    def __ne__(self, value):
-        return np.logical_not(self == value)
+        return self._frame.is_equivalent_frame(value._frame) and self._data == value._data
 
     def _apply(self, method, *args, **kwargs):
         """Create a new instance, applying a method to the underlying data.
@@ -361,7 +500,8 @@ class SkyCoord(MaskableShapedLikeNDArray):
 
         # create a new but empty instance, and copy over stuff
         new = super().__new__(self.__class__)
-        new._sky_coord_frame = self._sky_coord_frame._apply(method, *args, **kwargs)
+        new._frame = self._apply_to_frame(self._frame, method, *args, **kwargs)
+        new._data = self._data._apply(method, *args, **kwargs)
         new._extra_frameattr_names = self._extra_frameattr_names.copy()
         for attr in self._extra_frameattr_names:
             value = getattr(self, attr)
@@ -399,7 +539,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
           self.frame.data[item] = value.frame.data
         """
         if value is np.ma.masked or value is np.ma.nomask:
-            self.data.__setitem__(item, value)
+            self._data.__setitem__(item, value)
             self.cache.clear()
             return
 
@@ -409,59 +549,50 @@ class SkyCoord(MaskableShapedLikeNDArray):
                 f"{self.__class__.__name__} vs. {value.__class__.__name__}"
             )
 
+        if not self._frame.is_equivalent_frame(value._frame):
+            raise ValueError("cannot set: frames are not equivalent")
+
         # Make sure that any extra frame attribute names are equivalent.
         for attr in self._extra_frameattr_names | value._extra_frameattr_names:
-            if not self.frame._frameattr_equiv(
+            # TODO: APE23: simplify once BaseCoordinateFrame is deprecated            
+            if not BaseCoordinateFrame._frameattr_equiv(
                 getattr(self, attr), getattr(value, attr)
             ):
                 raise ValueError(f"attribute {attr} is not equivalent")
 
-        # Set the frame values.  This checks frame equivalence and also clears
-        # the cache to ensure that the object is not in an inconsistent state.
-        self._sky_coord_frame[item] = value._sky_coord_frame
+        if self._data.__class__ is not value._data.__class__:
+            raise TypeError(
+                "can only set from object of same class: "
+                f"{self._data.__class__.__name__} vs. {value._data.__class__.__name__}"
+            )
+
+        if self._data._differentials:
+            if self._data._differentials.keys() != value._data._differentials.keys():
+                raise ValueError("setitem value must have same differentials")
+            for key, self_diff in self._data._differentials.items():
+                if self_diff.__class__ is not value._data._differentials[key].__class__:
+                    raise TypeError(
+                        "can only set from object of same class: "
+                        f"{self_diff.__class__.__name__} vs. "
+                        f"{value._data._differentials[key].__class__.__name__}"
+                    )
+
+        if self._data.shape == ():
+            clsnm = type(self._frame).__name__
+            if clsnm.endswith("Frame"):
+                clsnm = clsnm[:-5]
+            raise TypeError(
+                f"scalar '{clsnm}' frame object does not support item assignment"
+            )
+
+        # Set on the representation and clear the cache
+        self._data[item] = value._data
+        self.cache.clear()
 
     def insert(self, obj, values, axis=0):
         return self.info._insert(obj, values, axis)
 
     insert.__doc__ = SkyCoordInfo._insert.__doc__
-
-    def is_transformable_to(self, new_frame):
-        """
-        Determines if this coordinate frame can be transformed to another
-        given frame.
-
-        Parameters
-        ----------
-        new_frame : frame class, frame object, or str
-            The proposed frame to transform into.
-
-        Returns
-        -------
-        transformable : bool or str
-            `True` if this can be transformed to ``new_frame``, `False` if
-            not, or the string 'same' if ``new_frame`` is the same system as
-            this object but no transformation is defined.
-
-        Notes
-        -----
-        A return value of 'same' means the transformation will work, but it will
-        just give back a copy of this object.  The intended usage is::
-
-            if coord.is_transformable_to(some_unknown_frame):
-                coord2 = coord.transform_to(some_unknown_frame)
-
-        This will work even if ``some_unknown_frame``  turns out to be the same
-        frame class as ``coord``.  This is intended for cases where the frame
-        is the same regardless of the frame attributes (e.g. ICRS), but be
-        aware that it *might* also indicate that someone forgot to define the
-        transformation between two objects of the same frame class but with
-        different attributes.
-        """
-        # TODO! like matplotlib, do string overrides for modified methods
-        new_frame = (
-            _get_frame_class(new_frame) if isinstance(new_frame, str) else new_frame
-        )
-        return self.frame.is_transformable_to(new_frame)
 
     def transform_to(self, frame, merge_attributes=True):
         """Transform this coordinate to a new frame.
@@ -528,6 +659,19 @@ class SkyCoord(MaskableShapedLikeNDArray):
                     frame_kwargs[attr] = self_val
                 elif frame_val is not None:
                     frame_kwargs[attr] = frame_val
+        elif isinstance(frame, BaseFrame):
+            new_frame_cls = type(frame)
+            for attr in frame_transform_graph.frame_attributes:
+                self_val = getattr(self, attr, None)
+                frame_val = getattr(frame, attr, None)
+                if frame_val is not None and not (
+                    merge_attributes and frame.is_frame_attr_default(attr)
+                ):
+                    frame_kwargs[attr] = frame_val
+                elif self_val is not None and not self.is_frame_attr_default(attr):
+                    frame_kwargs[attr] = self_val
+                elif frame_val is not None:
+                    frame_kwargs[attr] = frame_val
         else:
             raise ValueError(
                 "Transform `frame` must be a frame name, class, or instance"
@@ -535,6 +679,26 @@ class SkyCoord(MaskableShapedLikeNDArray):
 
         # Get the composite transform to the new frame
         trans = frame_transform_graph.get_transform(self.frame.__class__, new_frame_cls)
+
+        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated.
+        if (
+            trans is not None
+            and not trans.transforms
+            and self.frame.__class__ is new_frame_cls
+        ):
+            _bcf_self = next(
+                (
+                    s
+                    for s in type(self._frame).__subclasses__()
+                    if issubclass(s, BaseCoordinateFrame)
+                ),
+                None,
+            )
+            if _bcf_self is not None:
+                _bcf_trans = frame_transform_graph.get_transform(_bcf_self, _bcf_self)
+                if _bcf_trans is not None and _bcf_trans.transforms:
+                    trans = _bcf_trans
+
         if trans is None:
             raise ConvertError(
                 f"Cannot transform from {self.frame.__class__} to {new_frame_cls}"
@@ -545,20 +709,33 @@ class SkyCoord(MaskableShapedLikeNDArray):
         # which may require one or more of those kwargs.
         generic_frame = GenericFrame(frame_kwargs)
 
-        # Do the transformation, returning a coordinate frame of the desired
-        # final type (not generic).
-        new_coord = trans(self.frame, generic_frame)
+        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated.
+        _bcf_cls = next(
+            (
+                cls
+                for cls in type(self._frame).__subclasses__()
+                if issubclass(cls, BaseCoordinateFrame)
+            ),
+            None,
+        )
+        if _bcf_cls is not None:
+            _frame_attrs = {
+                k: getattr(self._frame, k)
+                for k in type(self._frame).frame_attributes
+            }
+            _from_coord = _bcf_cls(self._data, copy=False, **_frame_attrs)
+        else:
+            _from_coord = Coordinate(frame=self._frame, data=self._data)
+        new_coord = trans(_from_coord, generic_frame)
 
-        # Finally make the new SkyCoord object from the `new_coord` and
-        # remaining frame_kwargs that are not frame_attributes in `new_coord`.
-        for attr in set(new_coord.frame_attributes) & set(frame_kwargs.keys()):
+        # new_coord is a Coordinate. Strip frame_kwargs that are
+        # already in the result's frame, then build the new SkyCoord.
+        result_frame_attrs = set(type(new_coord.frame).frame_attributes)
+        for attr in result_frame_attrs & set(frame_kwargs.keys()):
             frame_kwargs.pop(attr)
 
-        # Always remove the origin frame attribute, as that attribute only makes
-        # sense with a SkyOffsetFrame (in which case it will be stored on the frame).
-        # See gh-11277.
-        # TODO: Should it be a property of the frame attribute that it can
-        # or cannot be stored on a SkyCoord?
+        # Always remove the origin frame attribute; it only makes sense on a
+        # SkyOffsetFrame (where it is stored on the frame itself).  See gh-11277.
         frame_kwargs.pop("origin", None)
 
         return self.__class__(new_coord, **frame_kwargs)
@@ -602,7 +779,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
             )
 
         # Validate that we have velocity info
-        if "s" not in self.frame.data.differentials:
+        if "s" not in self.data.differentials:
             raise ValueError("SkyCoord requires velocity data to evolve the position.")
 
         if "obstime" in self.frame.frame_attributes:
@@ -705,63 +882,131 @@ class SkyCoord(MaskableShapedLikeNDArray):
 
         return result
 
+    def realize_frame(self, data, **kwargs):
+        """Return a new |SkyCoord| with ``data`` substituted for the current data.
+
+        The frame and extra frame attributes are preserved.
+
+        Parameters
+        ----------
+        data : `~astropy.coordinates.BaseRepresentation`
+            The new representation data.
+        **kwargs
+            Additional frame attributes to override.
+
+        Returns
+        -------
+        |SkyCoord|
+        """
+        extra = {a: getattr(self, a) for a in self._extra_frameattr_names}
+        extra.update(kwargs)
+        return type(self)(Coordinate(frame=self._frame, data=data), **extra)
+
     def _is_name(self, string):
         """
         Returns whether a string is one of the aliases for the frame.
         """
-        return self.frame.name == string or (
-            isinstance(self.frame.name, list) and string in self.frame.name
+        return self._frame.name == string or (
+            isinstance(self._frame.name, list) and string in self._frame.name
         )
+
+    def is_frame_attr_default(self, attrnm):
+        """Return True if ``attrnm`` is using its default value.
+
+        For attributes on the current frame, this delegates to the frame.
+        Attributes in ``_extra_frameattr_names`` were explicitly set and are
+        not considered defaults.
+        """
+        if attrnm in type(self._frame).frame_attributes:
+            return self._frame.is_frame_attr_default(attrnm)
+        if attrnm in self._extra_frameattr_names:
+            return False
+        return True
 
     def __getattr__(self, attr):
         """
         Overrides getattr to return coordinates that this can be transformed
         to, based on the alias attr in the primary transform graph.
         """
-        if "_sky_coord_frame" in self.__dict__:
+        if "_frame" in self.__dict__:
             if self._is_name(attr):
-                return self  # Should this be a deepcopy of self?
+                return self
 
-            # Anything in the set of all possible frame_attr_names is handled
-            # here. If the attr is relevant for the current frame then delegate
-            # to self.frame otherwise get it from self._<attr>.
+            # Frame attributes: prefer current frame, then carry-along extras
             if attr in frame_transform_graph.frame_attributes:
-                if attr in self.frame.frame_attributes:
-                    return getattr(self.frame, attr)
+                if attr in type(self._frame).frame_attributes:
+                    return getattr(self._frame, attr)
                 else:
                     return getattr(self, "_" + attr, None)
 
-            # Some attributes might not fall in the above category but still
-            # are available through self._sky_coord_frame.
-            if not attr.startswith("_") and hasattr(self._sky_coord_frame, attr):
-                return getattr(self._sky_coord_frame, attr)
+            # Representation component names (e.g., ra, dec, l, b).
+            repr_names = self._frame.representation_component_names
+            if attr in repr_names:
+                cache_key = (type(self._frame.representation_type), None, True)
+                if cache_key not in self.cache["representation"]:
+                    self.cache["representation"][cache_key] = self.represent_as(
+                        self._frame.representation_type, in_frame_units=True
+                    )
+                rep = self.cache["representation"][cache_key]
+                return getattr(rep, repr_names[attr])
+
+            # Differential component names (e.g., pm_ra_cosdec, radial_velocity).
+            diff_names = self._frame.get_representation_component_names("s")
+            if attr in diff_names:
+                if "s" not in self._data.differentials:
+                    raise AttributeError(
+                        f"{type(self).__name__!r} object has no associated"
+                        f" differentials. The component {attr!r} requires them."
+                    )
+                rep_cls_dict = self._frame.get_representation_cls(None)
+                cache_key = (
+                    type(rep_cls_dict["base"]),
+                    type(rep_cls_dict.get("s")),
+                    True,
+                )
+                if cache_key not in self.cache["representation"]:
+                    self.cache["representation"][cache_key] = self.represent_as(
+                        in_frame_units=True, **rep_cls_dict
+                    )
+                rep = self.cache["representation"][cache_key]
+                return getattr(rep.differentials["s"], diff_names[attr])
 
             # Try to interpret as a new frame for transforming.
             frame_cls = frame_transform_graph.lookup_name(attr)
-            if frame_cls is not None and self.frame.is_transformable_to(frame_cls):
+            if frame_cls is not None and self._frame.is_transformable_to(frame_cls):
                 return self.transform_to(attr)
 
-        # Call __getattribute__; this will give correct exception.
+            # Registered frame-specific properties
+            from astropy.coordinates.coordinate import BaseCoordinate
+            frame_props = BaseCoordinate._get_frame_props(
+                self._frame.name
+            )
+            if attr in frame_props:
+                return frame_props[attr](self)
+
+        # Call __getattribute__; this will give the correct exception.
         return self.__getattribute__(attr)
 
     def __setattr__(self, attr, val):
         # This is to make anything available through __getattr__ immutable
         if attr != "info" and not attr.startswith("_"):
-            if "_sky_coord_frame" in self.__dict__:
+            if "_frame" in self.__dict__:
                 if self._is_name(attr):
                     raise AttributeError(f"'{attr}' is immutable")
 
-                if hasattr(self._sky_coord_frame, attr):
-                    setattr(self._sky_coord_frame, attr, val)
-                    return
+                _repr_names = self._frame.get_representation_component_names()
+                _diff_names = self._frame.get_representation_component_names("s")
+                if attr in _repr_names or attr in _diff_names:
+                    raise AttributeError(f"'{attr}' is immutable")
+
+                if attr in type(self._frame).frame_attributes:
+                    raise AttributeError(f"'{attr}' is immutable")
 
             if attr in frame_transform_graph.frame_attributes:
-                # All possible frame attributes can be set, but only via a private
-                # variable.  See __getattr__ above.
+                # Store as a private variable and track in _extra_frameattr_names
                 super().__setattr__("_" + attr, val)
                 # Validate it
                 frame_transform_graph.frame_attributes[attr].__get__(self)
-                # And add to set of extra attributes
                 self._extra_frameattr_names |= {attr}
                 return
 
@@ -773,16 +1018,24 @@ class SkyCoord(MaskableShapedLikeNDArray):
 
     def __delattr__(self, attr):
         # mirror __setattr__ above
-        if "_sky_coord_frame" in self.__dict__:
+        if "_frame" in self.__dict__:
             if self._is_name(attr):
                 raise AttributeError(f"'{attr}' is immutable")
 
-            if not attr.startswith("_") and hasattr(self._sky_coord_frame, attr):
-                delattr(self._sky_coord_frame, attr)
+            # Attribute belongs to the current frame: rebuild the frame
+            # without this attribute (i.e., revert to its default).
+            if attr in type(self._frame).frame_attributes:
+                fa = {
+                    k: getattr(self._frame, k)
+                    for k in type(self._frame).frame_attributes
+                    if k != attr
+                }
+                self.__dict__["_frame"] = type(self._frame)(**fa)
+                self.cache.clear()
                 return
 
             frame_cls = frame_transform_graph.lookup_name(attr)
-            if frame_cls is not None and self.frame.is_transformable_to(frame_cls):
+            if frame_cls is not None and self._frame.is_transformable_to(frame_cls):
                 raise AttributeError(f"'{attr}' is immutable")
 
         if attr in frame_transform_graph.frame_attributes:
@@ -820,89 +1073,35 @@ class SkyCoord(MaskableShapedLikeNDArray):
         # Add all possible frame attributes
         dir_values.update(frame_transform_graph.frame_attributes.keys())
 
+        # Add registered frame-specific properties
+        from astropy.coordinates.coordinate import BaseCoordinate
+        dir_values.update(
+            BaseCoordinate._get_frame_props(self._frame.name)
+        )
+
         return sorted(dir_values)
 
     def __repr__(self):
         clsnm = self.__class__.__name__
-        coonm = self.frame.__class__.__name__
-        frameattrs = self.frame._frame_attrs_repr()
+        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated
+        bcf_cls = next(
+            (
+                cls
+                for cls in type(self._frame).__subclasses__()
+                if issubclass(cls, BaseCoordinateFrame)
+            ),
+            None,
+        )
+        coonm = bcf_cls.__name__ if bcf_cls is not None else type(self._frame).__name__
+        frameattrs = self._frame._frame_attrs_repr()
         if frameattrs:
             frameattrs = ": " + frameattrs
 
-        data = self.frame._data_repr()
+        data = self._data_repr()
         if data:
             data = ": " + data
 
         return f"<{clsnm} ({coonm}{frameattrs}){data}>"
-
-    def to_string(self, style="decimal", **kwargs):
-        """
-        A string representation of the coordinates.
-
-        The default styles definitions are::
-
-          'decimal': 'lat': {'decimal': True, 'unit': "deg"}
-                     'lon': {'decimal': True, 'unit': "deg"}
-          'dms': 'lat': {'unit': "deg"}
-                 'lon': {'unit': "deg"}
-          'hmsdms': 'lat': {'alwayssign': True, 'pad': True, 'unit': "deg"}
-                    'lon': {'pad': True, 'unit': "hour"}
-
-        See :meth:`~astropy.coordinates.Angle.to_string` for details and
-        keyword arguments (the two angles forming the coordinates are are
-        both :class:`~astropy.coordinates.Angle` instances). Keyword
-        arguments have precedence over the style defaults and are passed
-        to :meth:`~astropy.coordinates.Angle.to_string`.
-
-        Parameters
-        ----------
-        style : {'hmsdms', 'dms', 'decimal'}
-            The formatting specification to use. These encode the three most
-            common ways to represent coordinates. The default is `decimal`.
-        **kwargs
-            Keyword args passed to :meth:`~astropy.coordinates.Angle.to_string`.
-        """
-        sph_coord = self.frame.represent_as(SphericalRepresentation)
-
-        styles = {
-            "hmsdms": {
-                "lonargs": {"unit": u.hour, "pad": True},
-                "latargs": {"unit": u.degree, "pad": True, "alwayssign": True},
-            },
-            "dms": {"lonargs": {"unit": u.degree}, "latargs": {"unit": u.degree}},
-            "decimal": {
-                "lonargs": {"unit": u.degree, "decimal": True},
-                "latargs": {"unit": u.degree, "decimal": True},
-            },
-        }
-
-        lonargs = {}
-        latargs = {}
-
-        if style in styles:
-            lonargs.update(styles[style]["lonargs"])
-            latargs.update(styles[style]["latargs"])
-        else:
-            raise ValueError(f"Invalid style.  Valid options are: {','.join(styles)}")
-
-        lonargs.update(kwargs)
-        latargs.update(kwargs)
-
-        if np.isscalar(sph_coord.lon.value):
-            coord_string = (
-                f"{sph_coord.lon.to_string(**lonargs)}"
-                f" {sph_coord.lat.to_string(**latargs)}"
-            )
-        else:
-            coord_string = []
-            for lonangle, latangle in zip(sph_coord.lon.ravel(), sph_coord.lat.ravel()):
-                coord_string += [
-                    f"{lonangle.to_string(**lonargs)} {latangle.to_string(**latargs)}"
-                ]
-            if len(sph_coord.shape) > 1:
-                coord_string = np.array(coord_string).reshape(sph_coord.shape)
-
-        return coord_string
 
     def to_table(self):
         """
@@ -933,11 +1132,9 @@ class SkyCoord(MaskableShapedLikeNDArray):
         >>> t.meta
         {'representation_type': 'spherical', 'frame': 'icrs'}
         """
-        table = self.frame.to_table()
-        # Record extra attributes not on the frame that have the same length as self as
-        # columns in the table, and the other attributes as table metadata.
-        # This matches table.serialize._represent_mixin_as_column().
-        table.meta["frame"] = self.frame.name
+        table = super().to_table()
+        # Record extra carry-along attributes: array-shaped ones become columns,
+        # scalar ones become metadata.
         for key in self._extra_frameattr_names:
             value = getattr(self, key)
             if getattr(value, "shape", ())[:1] == (len(self),):
@@ -972,8 +1169,23 @@ class SkyCoord(MaskableShapedLikeNDArray):
             If ``other`` isn't a |SkyCoord| or a subclass of
             `~astropy.coordinates.BaseCoordinateFrame`.
         """
+        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated
         if isinstance(other, BaseCoordinateFrame):
-            return self.frame.is_equivalent_frame(other)
+            other_frame = other
+            for cls in type(other).__mro__:
+                if (
+                    cls is not BaseFrame
+                    and issubclass(cls, BaseFrame)
+                    and not issubclass(cls, BaseCoordinateFrame)
+                ):
+                    fa = {
+                        k: getattr(other, k)
+                        for k in type(other).frame_attributes
+                        if not other.is_frame_attr_default(k)
+                    }
+                    other_frame = cls(**fa)
+                    break
+            return self.frame.is_equivalent_frame(other_frame)
         elif isinstance(other, SkyCoord):
             if other.frame.name != self.frame.name:
                 return False
@@ -1075,7 +1287,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
         transformation. For a more complete set of transform offsets, use
         `~astropy.coordinates.SkyOffsetFrame` or `~astropy.wcs.WCS` manually.
         This specific method can be reproduced by doing
-        ``SkyCoord(SkyOffsetFrame(d_lon, d_lat, origin=self.frame).transform_to(self))``.
+        ``SkyCoord(SkyOffsetFrame(d_lon, d_lat, origin=self).transform_to(self))``.
 
         See Also
         --------
@@ -1085,7 +1297,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
         from .builtin_frames.skyoffset import SkyOffsetFrame
 
         return self.__class__(
-            SkyOffsetFrame(d_lon, d_lat, origin=self.frame).transform_to(self)
+            SkyOffsetFrame(d_lon, d_lat, origin=self).transform_to(self)
         )
 
     def directional_offset_by(self, position_angle, separation):
@@ -1654,7 +1866,7 @@ class SkyCoord(MaskableShapedLikeNDArray):
                     "Must provide an `obstime` to radial_velocity_correction, either as"
                     " a SkyCoord frame attribute or in the method call."
                 )
-        elif self.obstime is not None and self.frame.data.differentials:
+        elif self.obstime is not None and self.data.differentials:
             # we do need space motion after all
             coo_at_rv_obstime = self.apply_space_motion(obstime)
         elif self.obstime is None and "s" in self.data.differentials:
