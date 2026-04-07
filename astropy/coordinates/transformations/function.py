@@ -15,7 +15,12 @@ from astropy.coordinates.representation import (
 from astropy.coordinates.transformations.base import CoordinateTransform
 from astropy.utils.exceptions import AstropyWarning
 
-__all__ = ["FunctionTransform", "FunctionTransformWithFiniteDifference"]
+__all__ = [
+    "FunctionTransform",
+    "FunctionTransformWithFiniteDifference",
+    "RepresentationFunctionTransform",
+    "RepresentationFunctionTransformWithFiniteDifference",
+]
 
 
 class FunctionTransform(CoordinateTransform):
@@ -61,12 +66,16 @@ class FunctionTransform(CoordinateTransform):
         )
 
     def __call__(self, fromcoord, toframe):
+        from astropy.coordinates.coordinate import BaseCoordinate
+
         res = self.func(fromcoord, toframe)
         if not isinstance(res, self.tosys):
-            raise TypeError(
-                f"the transformation function yielded {res} but "
-                f"should have been of type {self.tosys}"
-            )
+            # Accept a Coordinate wrapping a frame of the correct type
+            if not (isinstance(res, BaseCoordinate) and isinstance(res.frame, self.tosys)):
+                raise TypeError(
+                    f"the transformation function yielded {res} but "
+                    f"should have been of type {self.tosys}"
+                )
         if fromcoord.data.differentials and not res.data.differentials:
             warn(
                 "Applied a FunctionTransform to a coordinate frame with "
@@ -242,3 +251,261 @@ class FunctionTransformWithFiniteDifference(FunctionTransform):
         newdiff = CartesianDifferential(diffxyz)
         reprwithdiff = reprwithoutdiff.data.to_cartesian().with_differentials(newdiff)
         return reprwithoutdiff.realize_frame(reprwithdiff)
+
+
+class RepresentationFunctionTransform(CoordinateTransform):
+    """
+    A coordinate transform where the function returns a converter callable.
+
+    Unlike `FunctionTransform`, the registered function does not accept
+    coordinate data — it accepts two data-less frame instances and returns a
+    callable that maps `~astropy.coordinates.BaseRepresentation` to
+    `~astropy.coordinates.BaseRepresentation`.     
+    During the deprecation period, legacy `~astropy.coordinates.BaseCoordinateFrame` 
+    instances are also supported.
+
+    Signature::
+
+        func(from_frame, to_frame) -> Callable[[BaseRepresentation], BaseRepresentation]
+
+    Parameters
+    ----------
+    func : callable
+        The transformation function.  Must accept two frame arguments and
+        return a callable converter.
+    fromsys : class
+        The coordinate frame class to start from.
+    tosys : class
+        The coordinate frame class to transform into.
+    priority : float or int
+        The priority of this transform when finding the shortest
+        coordinate transform path — larger numbers are lower priorities.
+    register_graph : `~astropy.coordinates.TransformGraph` or None
+        A graph to register this transformation with on creation, or
+        `None` to leave it unregistered.
+
+    Raises
+    ------
+    TypeError
+        If ``func`` is not callable.
+    """
+
+    def __init__(self, func, fromsys, tosys, priority=1, register_graph=None):
+        if not callable(func):
+            raise TypeError("func must be callable")
+        self.func = func
+        super().__init__(fromsys, tosys, priority=priority, register_graph=register_graph)
+
+    def __call__(self, fromcoord, toframe):
+        from astropy.coordinates.coordinate import BaseCoordinate, Coordinate
+
+        # Accept both Coordinate(.frame/.data separate) and legacy
+        # BaseCoordinateFrame (.data on the frame object itself).
+        # TODO: APE23: simplify once legacy (data-ful) frames are deprecated        
+        from_frame = getattr(fromcoord, "frame", fromcoord)
+        data = fromcoord.data
+
+        converter = self.func(from_frame, toframe)
+        new_data = converter(data)
+
+        if isinstance(fromcoord, BaseCoordinate):
+            return Coordinate(frame=toframe, data=new_data)
+
+        # Legacy BaseCoordinateFrame input — return a realized frame.
+        result = toframe.realize_frame(new_data)
+        if not isinstance(result, self.tosys):
+            raise TypeError(
+                f"the transformation function yielded {result} but "
+                f"should have been of type {self.tosys}"
+            )
+        if data.differentials and not result.data.differentials:
+            warn(
+                "Applied a RepresentationFunctionTransform to a coordinate frame "
+                "with differentials, but the transform dropped them.",
+                AstropyWarning,
+            )
+        return result
+
+
+class RepresentationFunctionTransformWithFiniteDifference(RepresentationFunctionTransform):
+    r"""A `RepresentationFunctionTransform` that computes velocity differentials
+    via finite differences.
+
+    The registered function has the same signature as
+    `~astropy.coordinates.RepresentationFunctionTransform`::
+
+        func(from_frame, to_frame) -> Callable[[BaseRepresentation], BaseRepresentation]
+
+    The converter must handle position-only (differential-free)
+    representations.  Velocity differentials are computed by:
+
+    1. **Re-orienting existing velocity**: applying the same converter to
+       positions offset forward/backward along the velocity vector.
+    2. **Induced velocity**: re-invoking the outer function with frame
+       attributes (e.g., ``obstime``) shifted by dt to capture velocity
+       from frame motion.
+
+    The transform function should not change the differential, as any differentials 
+    will be overridden.
+
+    Parameters
+    ----------
+    finite_difference_frameattr_name : str or None
+        Frame attribute used for induced-velocity computation (typically
+        ``'obstime'``). Both from- and to-frames are checked; at least one
+        must have it. ``None`` disables the induced-velocity component.
+    finite_difference_dt : `~astropy.units.Quantity` ['time'] or callable
+        Step size for finite difference. If callable, called with
+        ``(fromcoord, toframe)`` and must return a Quantity.
+    symmetric_finite_difference : bool
+        If ``True`` use +/-dt/2 (symmetric, accurate); if ``False`` use
+        +dt (forward, fast).
+
+    All other parameters are identical to
+    `~astropy.coordinates.RepresentationFunctionTransform`.
+    """
+
+    def __init__(
+        self,
+        func,
+        fromsys,
+        tosys,
+        priority=1,
+        register_graph=None,
+        finite_difference_frameattr_name="obstime",
+        finite_difference_dt=1 * u.second,
+        symmetric_finite_difference=True,
+    ):
+        super().__init__(
+            func, fromsys, tosys, priority=priority, register_graph=register_graph
+        )
+        self.finite_difference_frameattr_name = finite_difference_frameattr_name
+        self.finite_difference_dt = finite_difference_dt
+        self.symmetric_finite_difference = symmetric_finite_difference
+
+    @property
+    def finite_difference_frameattr_name(self):
+        return self._finite_difference_frameattr_name
+
+    @finite_difference_frameattr_name.setter
+    def finite_difference_frameattr_name(self, value):
+        if value is None:
+            self._diff_attr_in_fromsys = self._diff_attr_in_tosys = False
+        else:
+            diff_attr_in_fromsys = value in self.fromsys.frame_attributes
+            diff_attr_in_tosys = value in self.tosys.frame_attributes
+            if diff_attr_in_fromsys or diff_attr_in_tosys:
+                self._diff_attr_in_fromsys = diff_attr_in_fromsys
+                self._diff_attr_in_tosys = diff_attr_in_tosys
+            else:
+                raise ValueError(
+                    f"Frame attribute name {value} is not a frame attribute of"
+                    f" {self.fromsys} or {self.tosys}"
+                )
+        self._finite_difference_frameattr_name = value
+
+    def __call__(self, fromcoord, toframe):
+        from astropy.coordinates.coordinate import BaseCoordinate, Coordinate
+
+        from_frame = getattr(fromcoord, "frame", fromcoord)
+        data = fromcoord.data
+
+        if not data.differentials:
+            return super().__call__(fromcoord, toframe)
+
+        if callable(self.finite_difference_dt):
+            dt = self.finite_difference_dt(fromcoord, toframe)
+        else:
+            dt = self.finite_difference_dt
+        halfdt = dt / 2
+
+        converter = self.func(from_frame, toframe)
+        data_pos_only = data.without_differentials()
+
+        # Convert to Cartesian to apply positional offsets
+        data_cart_full = data.represent_as(
+            CartesianRepresentation, differential_class={"s": CartesianDifferential}
+        )
+        from_cart_pos = data_cart_full.without_differentials()
+        d_xyz = data_cart_full.differentials["s"].d_xyz
+
+        new_pos = converter(data_pos_only)
+
+        if self.symmetric_finite_difference:
+            fwd_new = converter(
+                CartesianRepresentation(from_cart_pos.xyz + d_xyz * halfdt)
+            ).represent_as(CartesianRepresentation)
+            back_new = converter(
+                CartesianRepresentation(from_cart_pos.xyz - d_xyz * halfdt)
+            ).represent_as(CartesianRepresentation)
+        else:
+            fwd_new = converter(
+                CartesianRepresentation(from_cart_pos.xyz + d_xyz * dt)
+            ).represent_as(CartesianRepresentation)
+            back_new = new_pos.represent_as(CartesianRepresentation)
+
+        diffxyz = (fwd_new.xyz - back_new.xyz) / dt
+
+        attrname = self.finite_difference_frameattr_name
+        if attrname is not None:
+            if self.symmetric_finite_difference:
+                from_fwd, to_fwd = self._shift_frames(
+                    from_frame, toframe, attrname, +halfdt
+                )
+                from_back, to_back = self._shift_frames(
+                    from_frame, toframe, attrname, -halfdt
+                )
+                pos_fwd = self.func(from_fwd, to_fwd)(data_pos_only).represent_as(
+                    CartesianRepresentation
+                )
+                pos_back = self.func(from_back, to_back)(data_pos_only).represent_as(
+                    CartesianRepresentation
+                )
+            else:
+                from_fwd, to_fwd = self._shift_frames(
+                    from_frame, toframe, attrname, +dt
+                )
+                pos_fwd = self.func(from_fwd, to_fwd)(data_pos_only).represent_as(
+                    CartesianRepresentation
+                )
+                pos_back = new_pos.represent_as(CartesianRepresentation)
+
+            diffxyz = diffxyz + (pos_fwd.xyz - pos_back.xyz) / dt
+
+        # Base position + computed velocity differential.
+        new_diff = CartesianDifferential(diffxyz)
+        result_data = new_pos.represent_as(CartesianRepresentation).with_differentials(
+            new_diff
+        )
+
+        if isinstance(fromcoord, BaseCoordinate):
+            return Coordinate(frame=toframe, data=result_data)
+
+        result = toframe.realize_frame(result_data)
+        if not isinstance(result, self.tosys):
+            raise TypeError(
+                f"the transformation function yielded {result} but "
+                f"should have been of type {self.tosys}"
+            )
+        return result
+
+    def _shift_frames(self, from_frame, to_frame, attrname, delta):
+        """Return (from_frame, to_frame) with *attrname* shifted by *delta*."""
+        # TODO: APE23: simplify once legacy (data-ful) frames are deprecated
+        if self._diff_attr_in_fromsys:
+            fa = {
+                k: getattr(from_frame, k) for k in type(from_frame).frame_attributes
+            }
+            fa[attrname] = fa[attrname] + delta
+            from_shifted = type(from_frame)(**fa)
+        else:
+            from_shifted = from_frame
+
+        if self._diff_attr_in_tosys:
+            fa = {k: getattr(to_frame, k) for k in type(to_frame).frame_attributes}
+            fa[attrname] = fa[attrname] + delta
+            to_shifted = type(to_frame)(**fa)
+        else:
+            to_shifted = to_frame
+
+        return from_shifted, to_shifted
