@@ -259,13 +259,12 @@ the catalog:
 This functionality can also be accessed from the
 :func:`~astropy.coordinates.match_coordinates_sky` and
 :func:`~astropy.coordinates.match_coordinates_3d` functions. These
-will work on either |SkyCoord| objects *or* the lower-level frame classes:
+will work on |SkyCoord| objects:
 
 .. doctest-requires:: scipy
 
     >>> from astropy.coordinates import match_coordinates_sky
     >>> idx, d2d, d3d = match_coordinates_sky(c, catalog)
-    >>> idx, d2d, d3d = match_coordinates_sky(c.frame, catalog.frame)
 
 It is possible to impose a separation constraint (e.g., the maximum separation to be
 considered a match) by creating a boolean mask with ``d2d`` or ``d3d``. For example:
