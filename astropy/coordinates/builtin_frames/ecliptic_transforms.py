@@ -8,13 +8,14 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.baseframe import frame_transform_graph
+from astropy.coordinates.coordinate import Coordinate
 from astropy.coordinates.errors import UnitsError
 from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix
 from astropy.coordinates.transformations import (
     AffineTransform,
     DynamicMatrixTransform,
     FunctionTransformWithFiniteDifference,
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 from .ecliptic import (
@@ -79,9 +80,10 @@ def _obliquity_only_rotation_matrix(
 
 
 @frame_transform_graph.transform(
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
     GCRSFrame,
     GeocentricMeanEclipticFrame,
+    finite_difference_frameattr_name="equinox",
 )
 def gcrs_to_geoecliptic(gcrs_frame, to_frame):
     rmat = _mean_ecliptic_rotation_matrix(to_frame.equinox)
@@ -95,17 +97,24 @@ def gcrs_to_geoecliptic(gcrs_frame, to_frame):
     def converter(rep):
         if needs_reroute:
             # first get us to a 0 pos/vel GCRS at the target obstime
-            rep = GCRS(
-                rep,
-                obstime=gcrs_frame.obstime,
-                obsgeoloc=gcrs_frame.obsgeoloc,
-                obsgeovel=gcrs_frame.obsgeovel,
-            ).transform_to(GCRS(obstime=to_frame.obstime)).data
+            rep = (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=gcrs_frame.obstime,
+                        obsgeoloc=gcrs_frame.obsgeoloc,
+                        obsgeovel=gcrs_frame.obsgeovel,
+                    ),
+                    rep,
+                )
+                .transform_to(GCRSFrame(obstime=to_frame.obstime))
+                .data
+            )
         return rep.to_cartesian().transform(rmat)
 
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(
     FunctionTransformWithFiniteDifference,
     GCRS,
@@ -118,7 +127,9 @@ def gcrs_to_geoecliptic_legacy(gcrs_coo, to_frame):
 
 
 @frame_transform_graph.transform(
-    RepresentationFunctionTransform, GeocentricMeanEclipticFrame, GCRSFrame
+    RepresentationFunctionTransformWithFiniteDifference,
+    GeocentricMeanEclipticFrame,
+    GCRSFrame,
 )
 def geoecliptic_to_gcrs(from_frame, gcrs_frame):
     rmat = _mean_ecliptic_rotation_matrix(from_frame.equinox)
@@ -132,14 +143,18 @@ def geoecliptic_to_gcrs(from_frame, gcrs_frame):
     def converter(rep):
         newrepr = rep.to_cartesian().transform(matrix_transpose(rmat))
         if needs_reroute:
-            gcrs = GCRS(newrepr, obstime=from_frame.obstime)
             # now do any needed offsets (no-op if same obstime and 0 pos/vel)
-            return gcrs.transform_to(gcrs_frame).data
+            return (
+                Coordinate(GCRSFrame(obstime=from_frame.obstime), newrepr)
+                .transform_to(gcrs_frame)
+                .data
+            )
         return newrepr
 
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(
     FunctionTransformWithFiniteDifference, GeocentricMeanEcliptic, GCRS
 )
@@ -203,9 +218,10 @@ def helioecliptic_to_icrs(from_coo, to_frame):
 
 
 @frame_transform_graph.transform(
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
     GCRSFrame,
     GeocentricTrueEclipticFrame,
+    finite_difference_frameattr_name="equinox",
 )
 def gcrs_to_true_geoecliptic(gcrs_frame, to_frame):
     rmat = _true_ecliptic_rotation_matrix(to_frame.equinox)
@@ -219,17 +235,24 @@ def gcrs_to_true_geoecliptic(gcrs_frame, to_frame):
     def converter(rep):
         if needs_reroute:
             # first get us to a 0 pos/vel GCRS at the target obstime
-            rep = GCRS(
-                rep,
-                obstime=gcrs_frame.obstime,
-                obsgeoloc=gcrs_frame.obsgeoloc,
-                obsgeovel=gcrs_frame.obsgeovel,
-            ).transform_to(GCRS(obstime=to_frame.obstime)).data
+            rep = (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=gcrs_frame.obstime,
+                        obsgeoloc=gcrs_frame.obsgeoloc,
+                        obsgeovel=gcrs_frame.obsgeovel,
+                    ),
+                    rep,
+                )
+                .transform_to(GCRSFrame(obstime=to_frame.obstime))
+                .data
+            )
         return rep.to_cartesian().transform(rmat)
 
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(
     FunctionTransformWithFiniteDifference,
     GCRS,
@@ -242,7 +265,9 @@ def gcrs_to_true_geoecliptic_legacy(gcrs_coo, to_frame):
 
 
 @frame_transform_graph.transform(
-    RepresentationFunctionTransform, GeocentricTrueEclipticFrame, GCRSFrame
+    RepresentationFunctionTransformWithFiniteDifference,
+    GeocentricTrueEclipticFrame,
+    GCRSFrame,
 )
 def true_geoecliptic_to_gcrs(from_frame, gcrs_frame):
     rmat = _true_ecliptic_rotation_matrix(from_frame.equinox)
@@ -256,14 +281,18 @@ def true_geoecliptic_to_gcrs(from_frame, gcrs_frame):
     def converter(rep):
         newrepr = rep.to_cartesian().transform(matrix_transpose(rmat))
         if needs_reroute:
-            gcrs = GCRS(newrepr, obstime=from_frame.obstime)
             # now do any needed offsets (no-op if same obstime and 0 pos/vel)
-            return gcrs.transform_to(gcrs_frame).data
+            return (
+                Coordinate(GCRSFrame(obstime=from_frame.obstime), newrepr)
+                .transform_to(gcrs_frame)
+                .data
+            )
         return newrepr
 
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(
     FunctionTransformWithFiniteDifference, GeocentricTrueEcliptic, GCRS
 )

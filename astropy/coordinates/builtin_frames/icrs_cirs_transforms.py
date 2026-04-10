@@ -8,6 +8,7 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.baseframe import frame_transform_graph
+from astropy.coordinates.coordinate import Coordinate
 from astropy.coordinates.erfa_astrom import erfa_astrom
 from astropy.coordinates.representation import (
     CartesianRepresentation,
@@ -17,7 +18,7 @@ from astropy.coordinates.representation import (
 from astropy.coordinates.transformations import (
     AffineTransform,
     FunctionTransformWithFiniteDifference,
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 from .cirs import CIRS, CIRSFrame
@@ -28,7 +29,9 @@ from .utils import atciqz, aticq, get_offset_sun_from_barycenter
 
 
 # First the ICRS/CIRS related transforms
-@frame_transform_graph.transform(RepresentationFunctionTransform, ICRSFrame, CIRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ICRSFrame, CIRSFrame
+)
 def icrs_to_cirs(icrs_frame, cirs_frame):
     # first set up the astrometry context for ICRS<->CIRS
     astrom = erfa_astrom.get().apco(cirs_frame)
@@ -66,13 +69,16 @@ def icrs_to_cirs(icrs_frame, cirs_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ICRS, CIRS)
 def icrs_to_cirs_legacy(icrs_coo, cirs_frame):
     converter = icrs_to_cirs(icrs_coo, cirs_frame)
     return cirs_frame.realize_frame(converter(icrs_coo.data))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, CIRSFrame, ICRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, CIRSFrame, ICRSFrame
+)
 def cirs_to_icrs(cirs_frame, icrs_frame):
     # set up the astrometry context for ICRS<->CIRS and then convert to
     # astrometric coordinate direction
@@ -111,6 +117,7 @@ def cirs_to_icrs(cirs_frame, icrs_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, ICRS)
 def cirs_to_icrs_legacy(cirs_coo, icrs_frame):
     converter = cirs_to_icrs(cirs_coo, icrs_frame)
@@ -120,7 +127,9 @@ def cirs_to_icrs_legacy(cirs_coo, icrs_frame):
 # Now the GCRS-related transforms to/from ICRS
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, ICRSFrame, GCRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ICRSFrame, GCRSFrame
+)
 def icrs_to_gcrs(icrs_frame, gcrs_frame):
     # first set up the astrometry context for ICRS<->GCRS.
     astrom = erfa_astrom.get().apcs(gcrs_frame)
@@ -158,13 +167,16 @@ def icrs_to_gcrs(icrs_frame, gcrs_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ICRS, GCRS)
 def icrs_to_gcrs_legacy(icrs_coo, gcrs_frame):
     converter = icrs_to_gcrs(icrs_coo, gcrs_frame)
     return gcrs_frame.realize_frame(converter(icrs_coo.data))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, GCRSFrame, ICRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, GCRSFrame, ICRSFrame
+)
 def gcrs_to_icrs(gcrs_frame, icrs_frame):
     # set up the astrometry context for ICRS<->GCRS and then convert to BCRS
     # coordinate direction
@@ -203,13 +215,16 @@ def gcrs_to_icrs(gcrs_frame, icrs_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, ICRS)
 def gcrs_to_icrs_legacy(gcrs_coo, icrs_frame):
     converter = gcrs_to_icrs(gcrs_coo, icrs_frame)
     return icrs_frame.realize_frame(converter(gcrs_coo.data))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, GCRSFrame, HCRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, GCRSFrame, HCRSFrame
+)
 def gcrs_to_hcrs(gcrs_frame, hcrs_frame):
     needs_reroute = np.any(gcrs_frame.obstime != hcrs_frame.obstime)
     if needs_reroute:
@@ -224,12 +239,18 @@ def gcrs_to_hcrs(gcrs_frame, hcrs_frame):
 
     def converter(rep):
         if needs_reroute:
-            rep = GCRS(
-                rep,
-                obstime=gcrs_frame.obstime,
-                obsgeoloc=gcrs_frame.obsgeoloc,
-                obsgeovel=gcrs_frame.obsgeovel,
-            ).transform_to(GCRS(**reroute_attrs)).data
+            rep = (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=gcrs_frame.obstime,
+                        obsgeoloc=gcrs_frame.obsgeoloc,
+                        obsgeovel=gcrs_frame.obsgeovel,
+                    ),
+                    rep,
+                )
+                .transform_to(GCRSFrame(**reroute_attrs))
+                .data
+            )
         # set up the astrometry context for ICRS<->GCRS and then convert to ICRS
         # coordinate direction
         srepr = rep.represent_as(SphericalRepresentation)
@@ -265,6 +286,7 @@ def gcrs_to_hcrs(gcrs_frame, hcrs_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, HCRS)
 def gcrs_to_hcrs_legacy(gcrs_coo, hcrs_frame):
     converter = gcrs_to_hcrs(gcrs_coo, hcrs_frame)

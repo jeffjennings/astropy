@@ -8,6 +8,7 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.baseframe import frame_transform_graph
+from astropy.coordinates.coordinate import Coordinate
 from astropy.coordinates.erfa_astrom import erfa_astrom
 from astropy.coordinates.representation import (
     CartesianRepresentation,
@@ -16,7 +17,7 @@ from astropy.coordinates.representation import (
 )
 from astropy.coordinates.transformations import (
     FunctionTransformWithFiniteDifference,
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 from .altaz import AltAz, AltAzFrame
@@ -25,8 +26,12 @@ from .hadec import HADec, HADecFrame
 from .utils import PIOVER2
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, CIRSFrame, AltAzFrame)
-@frame_transform_graph.transform(RepresentationFunctionTransform, CIRSFrame, HADecFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, CIRSFrame, AltAzFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, CIRSFrame, HADecFrame
+)
 def cirs_to_observed(cirs_frame, observed_frame):
     needs_reroute = np.any(cirs_frame.location != observed_frame.location) or np.any(
         cirs_frame.obstime != observed_frame.obstime
@@ -37,11 +42,18 @@ def cirs_to_observed(cirs_frame, observed_frame):
 
     def converter(rep):
         if needs_reroute:
-            rep = CIRS(
-                rep, obstime=cirs_frame.obstime, location=cirs_frame.location
-            ).transform_to(
-                CIRS(obstime=observed_frame.obstime, location=observed_frame.location)
-            ).data
+            rep = (
+                Coordinate(
+                    CIRSFrame(obstime=cirs_frame.obstime, location=cirs_frame.location),
+                    rep,
+                )
+                .transform_to(
+                    CIRSFrame(
+                        obstime=observed_frame.obstime, location=observed_frame.location
+                    )
+                )
+                .data
+            )
         # if the data are UnitSphericalRepresentation, we can skip distance calculations
         is_unitspherical = isinstance(rep, UnitSphericalRepresentation) or (
             rep.represent_as(CartesianRepresentation).x.unit == u.one
@@ -57,7 +69,9 @@ def cirs_to_observed(cirs_frame, observed_frame):
         else:
             _, _, lon, lat, _ = erfa.atioq(cirs_ra, cirs_dec, astrom)
         if is_unitspherical:
-            return UnitSphericalRepresentation(lon << u.radian, lat << u.radian, copy=False)
+            return UnitSphericalRepresentation(
+                lon << u.radian, lat << u.radian, copy=False
+            )
         else:
             # since we've transformed to CIRS at the observatory location, just use CIRS distance
             return SphericalRepresentation(
@@ -70,6 +84,7 @@ def cirs_to_observed(cirs_frame, observed_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, AltAz)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, HADec)
 def cirs_to_observed_legacy(cirs_coo, observed_frame):
@@ -77,8 +92,12 @@ def cirs_to_observed_legacy(cirs_coo, observed_frame):
     return observed_frame.realize_frame(converter(cirs_coo.data))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, AltAzFrame, CIRSFrame)
-@frame_transform_graph.transform(RepresentationFunctionTransform, HADecFrame, CIRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, AltAzFrame, CIRSFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, HADecFrame, CIRSFrame
+)
 def observed_to_cirs(observed_frame, cirs_frame):
     is_altaz = isinstance(observed_frame, AltAzFrame)
     # the 'A' indicates zen/az inputs, 'H' for HA/Dec
@@ -108,17 +127,24 @@ def observed_to_cirs(observed_frame, cirs_frame):
             )
         # this final transform may be a no-op if the obstimes and locations are the same
         if needs_reroute:
-            cirs_at_obs = CIRS(
-                cirs_rep, obstime=observed_frame.obstime, location=observed_frame.location
+            return (
+                Coordinate(
+                    CIRSFrame(
+                        obstime=observed_frame.obstime, location=observed_frame.location
+                    ),
+                    cirs_rep,
+                )
+                .transform_to(
+                    CIRSFrame(obstime=cirs_frame.obstime, location=cirs_frame.location)
+                )
+                .data
             )
-            return cirs_at_obs.transform_to(
-                CIRS(obstime=cirs_frame.obstime, location=cirs_frame.location)
-            ).data
         return cirs_rep
 
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz, CIRS)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec, CIRS)
 def observed_to_cirs_legacy(observed_coo, cirs_frame):

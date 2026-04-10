@@ -16,7 +16,7 @@ from astropy.coordinates.representation import (
 )
 from astropy.coordinates.transformations import (
     FunctionTransformWithFiniteDifference,
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 from .altaz import AltAz, AltAzFrame
@@ -25,8 +25,12 @@ from .icrs import ICRS, ICRSFrame
 from .utils import PIOVER2
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, ICRSFrame, AltAzFrame)
-@frame_transform_graph.transform(RepresentationFunctionTransform, ICRSFrame, HADecFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ICRSFrame, AltAzFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ICRSFrame, HADecFrame
+)
 def icrs_to_observed(icrs_frame, observed_frame):
     # first set up the astrometry context for ICRS<->observed
     astrom = erfa_astrom.get().apco(observed_frame)
@@ -59,7 +63,9 @@ def icrs_to_observed(icrs_frame, observed_frame):
             _, _, lon, lat, _ = erfa.atioq(cirs_ra, cirs_dec, astrom)
 
         if is_unitspherical:
-            return UnitSphericalRepresentation(lon << u.radian, lat << u.radian, copy=False)
+            return UnitSphericalRepresentation(
+                lon << u.radian, lat << u.radian, copy=False
+            )
         else:
             return SphericalRepresentation(
                 lon << u.radian, lat << u.radian, srepr.distance, copy=False
@@ -68,6 +74,7 @@ def icrs_to_observed(icrs_frame, observed_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ICRS, AltAz)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ICRS, HADec)
 def icrs_to_observed_legacy(icrs_coo, observed_frame):
@@ -75,14 +82,18 @@ def icrs_to_observed_legacy(icrs_coo, observed_frame):
     return observed_frame.realize_frame(converter(icrs_coo.data))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, AltAzFrame, ICRSFrame)
-@frame_transform_graph.transform(RepresentationFunctionTransform, HADecFrame, ICRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, AltAzFrame, ICRSFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, HADecFrame, ICRSFrame
+)
 def observed_to_icrs(observed_frame, icrs_frame):
     # first set up the astrometry context for ICRS<->observed at the observed frame's time
     astrom = erfa_astrom.get().apco(observed_frame)
     is_altaz = isinstance(observed_frame, AltAzFrame)
     # 'A' indicates zen/az inputs, 'H' hour angle/dec
-    coord_type = "A" if is_altaz else "H"  
+    coord_type = "A" if is_altaz else "H"
 
     def converter(rep):
         # if the data are UnitSphericalRepresentation, we can skip the distance calculations
@@ -126,6 +137,7 @@ def observed_to_icrs(observed_frame, icrs_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz, ICRS)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec, ICRS)
 def observed_to_icrs_legacy(observed_coo, icrs_frame):

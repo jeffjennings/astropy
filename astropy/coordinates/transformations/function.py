@@ -71,7 +71,9 @@ class FunctionTransform(CoordinateTransform):
         res = self.func(fromcoord, toframe)
         if not isinstance(res, self.tosys):
             # Accept a Coordinate wrapping a frame of the correct type
-            if not (isinstance(res, BaseCoordinate) and isinstance(res.frame, self.tosys)):
+            if not (
+                isinstance(res, BaseCoordinate) and isinstance(res.frame, self.tosys)
+            ):
                 raise TypeError(
                     f"the transformation function yielded {res} but "
                     f"should have been of type {self.tosys}"
@@ -260,8 +262,8 @@ class RepresentationFunctionTransform(CoordinateTransform):
     Unlike `FunctionTransform`, the registered function does not accept
     coordinate data — it accepts two data-less frame instances and returns a
     callable that maps `~astropy.coordinates.BaseRepresentation` to
-    `~astropy.coordinates.BaseRepresentation`.     
-    During the deprecation period, legacy `~astropy.coordinates.BaseCoordinateFrame` 
+    `~astropy.coordinates.BaseRepresentation`.
+    During the deprecation period, legacy `~astropy.coordinates.BaseCoordinateFrame`
     instances are also supported.
 
     Signature::
@@ -294,14 +296,16 @@ class RepresentationFunctionTransform(CoordinateTransform):
         if not callable(func):
             raise TypeError("func must be callable")
         self.func = func
-        super().__init__(fromsys, tosys, priority=priority, register_graph=register_graph)
+        super().__init__(
+            fromsys, tosys, priority=priority, register_graph=register_graph
+        )
 
     def __call__(self, fromcoord, toframe):
         from astropy.coordinates.coordinate import BaseCoordinate, Coordinate
 
         # Accept both Coordinate(.frame/.data separate) and legacy
         # BaseCoordinateFrame (.data on the frame object itself).
-        # TODO: APE23: simplify once legacy (data-ful) frames are deprecated        
+        # TODO: APE23: simplify when legacy frames are deprecated
         from_frame = getattr(fromcoord, "frame", fromcoord)
         data = fromcoord.data
 
@@ -327,7 +331,9 @@ class RepresentationFunctionTransform(CoordinateTransform):
         return result
 
 
-class RepresentationFunctionTransformWithFiniteDifference(RepresentationFunctionTransform):
+class RepresentationFunctionTransformWithFiniteDifference(
+    RepresentationFunctionTransform
+):
     r"""A `RepresentationFunctionTransform` that computes velocity differentials
     via finite differences.
 
@@ -345,7 +351,7 @@ class RepresentationFunctionTransformWithFiniteDifference(RepresentationFunction
        attributes (e.g., ``obstime``) shifted by dt to capture velocity
        from frame motion.
 
-    The transform function should not change the differential, as any differentials 
+    The transform function should not change the differential, as any differentials
     will be overridden.
 
     Parameters
@@ -491,11 +497,9 @@ class RepresentationFunctionTransformWithFiniteDifference(RepresentationFunction
 
     def _shift_frames(self, from_frame, to_frame, attrname, delta):
         """Return (from_frame, to_frame) with *attrname* shifted by *delta*."""
-        # TODO: APE23: simplify once legacy (data-ful) frames are deprecated
+        # TODO: APE23: simplify when legacy frames are deprecated
         if self._diff_attr_in_fromsys:
-            fa = {
-                k: getattr(from_frame, k) for k in type(from_frame).frame_attributes
-            }
+            fa = {k: getattr(from_frame, k) for k in type(from_frame).frame_attributes}
             fa[attrname] = fa[attrname] + delta
             from_shifted = type(from_frame)(**fa)
         else:

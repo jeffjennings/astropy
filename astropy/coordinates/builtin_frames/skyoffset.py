@@ -57,6 +57,8 @@ def make_skyoffset_cls(framecls):
         },
     )
 
+    # TODO: APE23: consider converting to RepresentationFunctionTransform
+    # for velocity support when legacy frames are deprecated
     @frame_transform_graph.transform(
         FunctionTransform, _SkyOffsetFramecls, _SkyOffsetFramecls
     )
@@ -155,7 +157,16 @@ class SkyOffsetFrame(BaseFrame):
                 )
             if hasattr(origin_frame, "frame"):
                 origin_frame = origin_frame.frame
-            newcls = make_skyoffset_cls(origin_frame.__class__)
+            # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
+            from astropy.coordinates.baseframe import BaseCoordinateFrame
+
+            framecls = origin_frame.__class__
+            if not issubclass(framecls, BaseCoordinateFrame):
+                for sub in framecls.__subclasses__():
+                    if issubclass(sub, BaseCoordinateFrame):
+                        framecls = sub
+                        break
+            newcls = make_skyoffset_cls(framecls)
             return newcls.__new__(newcls, *args, **kwargs)
 
         # http://stackoverflow.com/questions/19277399/why-does-object-new-work-differently-in-these-three-cases

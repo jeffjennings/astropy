@@ -3,11 +3,12 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.baseframe import frame_transform_graph
+from astropy.coordinates.coordinate import Coordinate
 from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix
 from astropy.coordinates.representation import CartesianRepresentation
 from astropy.coordinates.transformations import (
     FunctionTransformWithFiniteDifference,
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 from .altaz import AltAz, AltAzFrame
@@ -98,14 +99,20 @@ def remove_refraction(aa_crepr, observed_frame):
     return CartesianRepresentation(uv, xyz_axis=-1, unit=aa_crepr.x.unit, copy=False)
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, ITRSFrame, AltAzFrame)
-@frame_transform_graph.transform(RepresentationFunctionTransform, ITRSFrame, HADecFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, AltAzFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, HADecFrame
+)
 def itrs_to_observed(itrs_frame, observed_frame):
     needs_reroute = np.any(itrs_frame.location != observed_frame.location) or np.any(
         itrs_frame.obstime != observed_frame.obstime
     )
     lon, lat, height = observed_frame.location.to_geodetic("WGS84")
-    use_altaz = isinstance(observed_frame, AltAzFrame) or (observed_frame.pressure > 0.0)
+    use_altaz = isinstance(observed_frame, AltAzFrame) or (
+        observed_frame.pressure > 0.0
+    )
     apply_refraction = observed_frame.pressure > 0.0
     is_hadec = isinstance(observed_frame, HADecFrame)
     mat = itrs_to_altaz_mat(lon, lat) if use_altaz else itrs_to_hadec_mat(lon)
@@ -114,10 +121,18 @@ def itrs_to_observed(itrs_frame, observed_frame):
         cart = rep.represent_as(CartesianRepresentation)
         if needs_reroute:
             # This transform will go through the CIRS and alter stellar aberration.
-            temp = ITRS(cart, obstime=itrs_frame.obstime, location=itrs_frame.location)
-            cart = temp.transform_to(
-                ITRS(obstime=observed_frame.obstime, location=observed_frame.location)
-            ).cartesian
+            cart = (
+                Coordinate(
+                    ITRSFrame(obstime=itrs_frame.obstime, location=itrs_frame.location),
+                    cart,
+                )
+                .transform_to(
+                    ITRSFrame(
+                        obstime=observed_frame.obstime, location=observed_frame.location
+                    )
+                )
+                .data
+            )
         result = cart.transform(mat)
         if apply_refraction:
             result = add_refraction(result, observed_frame)
@@ -128,6 +143,7 @@ def itrs_to_observed(itrs_frame, observed_frame):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, AltAz)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, HADec)
 def itrs_to_observed_legacy(itrs_coo, observed_frame):
@@ -135,8 +151,12 @@ def itrs_to_observed_legacy(itrs_coo, observed_frame):
     return observed_frame.realize_frame(converter(itrs_coo.cartesian))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, AltAzFrame, ITRSFrame)
-@frame_transform_graph.transform(RepresentationFunctionTransform, HADecFrame, ITRSFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, AltAzFrame, ITRSFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, HADecFrame, ITRSFrame
+)
 def observed_to_itrs(observed_frame, itrs_frame):
     lon, lat, height = observed_frame.location.to_geodetic("WGS84")
     is_altaz = isinstance(observed_frame, AltAzFrame)
@@ -159,17 +179,24 @@ def observed_to_itrs(observed_frame, itrs_frame):
         # This final transform may be a no-op if the obstimes and locations are the same.
         # Otherwise, this transform will go through the CIRS and alter stellar aberration.
         if needs_reroute:
-            itrs_at_obs = ITRS(
-                cart, obstime=observed_frame.obstime, location=observed_frame.location
+            return (
+                Coordinate(
+                    ITRSFrame(
+                        obstime=observed_frame.obstime, location=observed_frame.location
+                    ),
+                    cart,
+                )
+                .transform_to(
+                    ITRSFrame(obstime=itrs_frame.obstime, location=itrs_frame.location)
+                )
+                .data
             )
-            return itrs_at_obs.transform_to(
-                ITRS(obstime=itrs_frame.obstime, location=itrs_frame.location)
-            ).cartesian
         return cart
 
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz, ITRS)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec, ITRS)
 def observed_to_itrs_legacy(observed_coo, itrs_frame):

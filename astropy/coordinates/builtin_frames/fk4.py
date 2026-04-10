@@ -7,7 +7,12 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.attributes import TimeAttribute
-from astropy.coordinates.baseframe import BaseCoordinateFrame, base_doc, base_doc_frame, frame_transform_graph
+from astropy.coordinates.baseframe import (
+    BaseCoordinateFrame,
+    base_doc,
+    base_doc_frame,
+    frame_transform_graph,
+)
 from astropy.coordinates.matrix_utilities import rotation_matrix
 from astropy.coordinates.representation import (
     CartesianRepresentation,
@@ -16,16 +21,15 @@ from astropy.coordinates.representation import (
 from astropy.coordinates.transformations import (
     DynamicMatrixTransform,
     FunctionTransformWithFiniteDifference,
-    RepresentationFunctionTransform,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
-
 from astropy.time import Time
 from astropy.utils.decorators import format_doc
 
 from .baseradec import BaseRADecFrame, doc_components
 from .utils import EQUINOX_B1950
 
-__all__ = ["FK4", "FK4NoETerms", "FK4Frame", "FK4NoETermsFrame"]
+__all__ = ["FK4", "FK4Frame", "FK4NoETerms", "FK4NoETermsFrame"]
 
 jd1950 = Time("B1950").jd
 
@@ -54,7 +58,7 @@ class FK4Frame(BaseRADecFrame):
     This class only holds metadata defining the FK4 reference frame.
     It does not store coordinate data. To store coordinate data in this frame,
     use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
-    legacy `FK4` class.    
+    legacy `FK4` class.
     """
 
     name = "fk4"
@@ -77,13 +81,14 @@ class FK4(BaseCoordinateFrame, FK4Frame):
 
     The frame attributes are listed under **Other Parameters**.
     """
-    pass
 
 
 # the "self" transform
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, FK4Frame, FK4Frame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, FK4Frame, FK4Frame
+)
 def fk4_to_fk4(fk4frame1, fk4frame2):
     # deceptively complicated: need to transform to No E-terms FK4, precess, and
     # then come back, because precession is non-trivial with E-terms
@@ -93,7 +98,9 @@ def fk4_to_fk4(fk4frame1, fk4frame2):
         fk4coord1 = FK4(rep, equinox=fk4frame1.equinox, obstime=fk4frame1.obstime)
         fnoe_w_eqx1 = fk4coord1.transform_to(FK4NoETerms(equinox=fk4coord1.equinox))
         if needs_precess:
-            fnoe_w_eqx1 = fnoe_w_eqx1.transform_to(FK4NoETerms(equinox=fk4frame2.equinox))
+            fnoe_w_eqx1 = fnoe_w_eqx1.transform_to(
+                FK4NoETerms(equinox=fk4frame2.equinox)
+            )
         return fnoe_w_eqx1.transform_to(
             FK4(equinox=fk4frame2.equinox, obstime=fk4frame2.obstime)
         ).data
@@ -101,6 +108,7 @@ def fk4_to_fk4(fk4frame1, fk4frame2):
     return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4, FK4)
 def fk4_to_fk4_legacy(fk4coord1, fk4frame2):
     converter = fk4_to_fk4(fk4coord1, fk4frame2)
@@ -119,7 +127,7 @@ class FK4NoETermsFrame(BaseRADecFrame):
     This class only holds metadata defining the FK4NoETerms reference frame.
     It does not store coordinate data. To store coordinate data in this frame,
     use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
-    legacy `FK4NoETerms` class.      
+    legacy `FK4NoETerms` class.
     """
 
     name = "fk4noe"
@@ -180,7 +188,6 @@ class FK4NoETerms(BaseCoordinateFrame, FK4NoETermsFrame):
 
     The frame attributes are listed under **Other Parameters**.
     """
-    pass
 
 
 # the "self" transform
@@ -190,7 +197,10 @@ class FK4NoETerms(BaseCoordinateFrame, FK4NoETermsFrame):
 def fk4noe_to_fk4noe(fk4necoord1, fk4neframe2):
     return fk4necoord1._precession_matrix(fk4necoord1.equinox, fk4neframe2.equinox)
 
-@frame_transform_graph.transform(DynamicMatrixTransform, FK4NoETermsFrame, FK4NoETermsFrame)
+
+@frame_transform_graph.transform(
+    DynamicMatrixTransform, FK4NoETermsFrame, FK4NoETermsFrame
+)
 def fk4noe_to_fk4noe_frame(fk4neframe1, fk4neframe2):
     return FK4NoETermsFrame._precession_matrix(fk4neframe1.equinox, fk4neframe2.equinox)
 
@@ -227,7 +237,9 @@ def fk4_e_terms(equinox):
     return (ek * np.sin(g), minus_ek_cos_g * np.cos(o), minus_ek_cos_g * np.sin(o))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, FK4Frame, FK4NoETermsFrame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, FK4Frame, FK4NoETermsFrame
+)
 def fk4_to_fk4_no_e(fk4frame, fk4noeframe):
     needs_precess = fk4frame.equinox != fk4noeframe.equinox
 
@@ -272,13 +284,18 @@ def fk4_to_fk4_no_e(fk4frame, fk4noeframe):
     return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4, FK4NoETerms)
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(
+    FunctionTransformWithFiniteDifference, FK4, FK4NoETerms
+)
 def fk4_to_fk4_no_e_legacy(fk4coo, fk4noeframe):
     converter = fk4_to_fk4_no_e(fk4coo, fk4noeframe)
     return fk4noeframe.realize_frame(converter(fk4coo.data))
 
 
-@frame_transform_graph.transform(RepresentationFunctionTransform, FK4NoETermsFrame, FK4Frame)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, FK4NoETermsFrame, FK4Frame
+)
 def fk4_no_e_to_fk4(fk4noeframe, fk4frame):
     needs_precess = fk4noeframe.equinox != fk4frame.equinox
     working_equinox = fk4frame.equinox if needs_precess else fk4noeframe.equinox
@@ -329,7 +346,10 @@ def fk4_no_e_to_fk4(fk4noeframe, fk4frame):
     return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, FK4NoETerms, FK4)
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(
+    FunctionTransformWithFiniteDifference, FK4NoETerms, FK4
+)
 def fk4_no_e_to_fk4_legacy(fk4noecoo, fk4frame):
     converter = fk4_no_e_to_fk4(fk4noecoo, fk4frame)
     return fk4frame.realize_frame(converter(fk4noecoo.data))
