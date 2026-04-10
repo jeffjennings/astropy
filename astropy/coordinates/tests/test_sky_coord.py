@@ -1453,7 +1453,7 @@ def test_init_with_frame_instance_keyword():
     # Check duplicate arguments
     with pytest.raises(ValueError) as err:
         c = SkyCoord(3 * u.deg, 4 * u.deg, frame=FK5(equinox="J2010"), equinox="J2001")
-    assert "Cannot specify frame attribute 'equinox'" in str(err.value)
+    assert "Frame attribute 'equinox' has conflicting values" in str(err.value)
 
 
 def test_guess_from_table():
