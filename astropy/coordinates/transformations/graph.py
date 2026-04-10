@@ -105,7 +105,7 @@ class TransformGraph:
     @functools.cached_property
     def _cached_names(self):
         # TODO: simplify once BaseCoordinateFrame is deprecated
-        from astropy.coordinates.baseframe import BaseCoordinateFrame as _BCF
+        from astropy.coordinates.baseframe import BaseCoordinateFrame
 
         dct = {}
         for c in self.frame_set:
@@ -115,7 +115,11 @@ class TransformGraph:
                     # On a name conflict, keep a BaseCoordinateFrame subclass
                     # over a dataless-only BaseFrame subclass (e.g., prefer ICRS over
                     # ICRSFrame when both are named "icrs").
-                    if existing is not None and issubclass(existing, _BCF) and not issubclass(c, _BCF):
+                    if (
+                        existing is not None
+                        and issubclass(existing, BaseCoordinateFrame)
+                        and not issubclass(c, BaseCoordinateFrame)
+                    ):
                         continue
                     dct[name] = c
         return dct

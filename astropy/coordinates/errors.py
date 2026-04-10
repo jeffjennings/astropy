@@ -17,6 +17,31 @@ if TYPE_CHECKING:
     from astropy.coordinates import BaseCoordinateFrame
 
 
+def _frame_repr_without_data(frame) -> str:
+    """Return a repr of *frame* without coordinate data.
+
+    Handles both `~astropy.coordinates.BaseCoordinateFrame` instances (which have
+    ``replicate_without_data``) and data-less ``BaseFrame`` subclasses (which do
+    not).  For the latter, the corresponding BaseCoordinateFrame subclass is
+    and used so that the repr format is consistent (e.g. ``<GCRS Frame ...>`` rather than
+    ``<GCRSFrame Frame ...>``).
+    """
+    if hasattr(frame, "replicate_without_data"):
+        return str(frame.replicate_without_data())
+    # TODO: APE23: simplify when BaseCoordinateFrame deprecated
+    from .baseframe import BaseCoordinateFrame  # local import to avoid circularity
+
+    fa = {k: getattr(frame, k) for k in type(frame).frame_attributes}
+    for sub in type(frame).__subclasses__():
+        if issubclass(sub, BaseCoordinateFrame):
+            try:
+                return str(sub(**fa).replicate_without_data())
+            except Exception:
+                break
+    # Ultimate fallback: just use the frame's own repr.
+    return repr(frame)
+
+
 # TODO: consider if this should be used to `units`?
 class UnitsError(ValueError):
     """
@@ -46,8 +71,8 @@ class NonRotationTransformationError(ValueError):
     def __str__(self) -> str:
         return (
             "refusing to transform other coordinates from "
-            f"{self.frame_from.replicate_without_data()} to "
-            f"{self.frame_to.replicate_without_data()} because angular separation "
+            f"{_frame_repr_without_data(self.frame_from)} to "
+            f"{_frame_repr_without_data(self.frame_to)} because angular separation "
             "can depend on the direction of the transformation"
         )
 
@@ -86,7 +111,7 @@ class NonRotationTransformationWarning(AstropyUserWarning):
     def __str__(self) -> str:
         return (
             "transforming other coordinates from "
-            f"{self.frame_from.replicate_without_data()} to "
-            f"{self.frame_to.replicate_without_data()}. Angular separation can depend "
+            f"{_frame_repr_without_data(self.frame_from)} to "
+            f"{_frame_repr_without_data(self.frame_to)}. Angular separation can depend "
             "on the direction of the transformation."
         )

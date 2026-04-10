@@ -264,7 +264,8 @@ class SpectralCoord(SpectralQuantity):
 
         if not issubclass(coord.__class__, BaseCoordinateFrame):
             if isinstance(coord, SkyCoord):
-                coord = coord.frame
+                # TODO: APE23: update when BaseCoordinateFrame is deprecated
+                coord = coord.frame.realize_frame(coord.data)
             else:
                 raise TypeError(
                     f"{label} must be a SkyCoord or coordinate frame instance"
@@ -592,9 +593,9 @@ class SpectralCoord(SpectralQuantity):
                 "and target are defined on the SpectralCoord."
             )
 
-        # Start off by extracting frame if a SkyCoord was passed in
+        # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         if isinstance(frame, SkyCoord):
-            frame = frame.frame
+            frame = frame.frame.realize_frame(frame.data)
 
         if isinstance(frame, BaseCoordinateFrame):
             if not frame.has_data:

@@ -500,14 +500,36 @@ class CoordinateAttribute(Attribute):
 
         if value is None:
             return None, False
-        elif isinstance(value, SkyCoord) and isinstance(value.frame, self._frame):
-            return value.frame, True
-        elif isinstance(value, self._frame):
+        elif isinstance(value, SkyCoord):
+            # TODO: APE23: simplify when BaseCoordinateFrame deprecated
+            if self._frame is not None and (
+                isinstance(value.frame, self._frame)
+                or issubclass(self._frame, type(value.frame))
+            ):
+                # Already in the right frame — reconstruct BCF with data.
+                frame_attrs = {
+                    k: getattr(value.frame, k)
+                    for k in type(value.frame).frame_attributes
+                }
+                return self._frame(value.data, **frame_attrs), True
+            else:
+                # Transform to the target frame and reconstruct BCF.
+                transformedobj = value.transform_to(self._frame)
+                frame_attrs = {
+                    k: getattr(transformedobj.frame, k)
+                    for k in type(transformedobj.frame).frame_attributes
+                }
+                return self._frame(transformedobj.data, **frame_attrs), True
+        elif self._frame is not None and isinstance(value, self._frame):
             return value, False
         else:
             value = SkyCoord(value)  # always make the value a SkyCoord
             transformedobj = value.transform_to(self._frame)
-            return transformedobj.frame, True
+            frame_attrs = {
+                k: getattr(transformedobj.frame, k)
+                for k in type(transformedobj.frame).frame_attributes
+            }
+            return self._frame(transformedobj.data, **frame_attrs), True
 
 
 class DifferentialAttribute(Attribute):
