@@ -32,6 +32,29 @@ ZERO_VELOCITIES = CartesianDifferential([0, 0, 0] * KMS)
 # Default distance to use for target when none is provided
 DEFAULT_DISTANCE = 1e6 * u.kpc
 
+
+def _coord_with_data(coord, data):
+    """Return *coord* with *data* substituted for its representation, frame unchanged."""
+    # TODO: APE23: simplify to Coordinate branch only when BaseCoordinateFrame is deprecated
+    if hasattr(coord, "realize_frame"):
+        return coord.realize_frame(data)
+    from astropy.coordinates.coordinate import Coordinate
+
+    return Coordinate(frame=coord.frame, data=data)
+
+
+def _replicate_frame_attrs(coord, **frame_attrs):
+    """Return *coord* with frame attributes updated."""
+    # TODO: APE23: simplify to Coordinate branch only when BaseCoordinateFrame is deprecated
+    if hasattr(coord, "replicate"):
+        return coord.replicate(**frame_attrs)
+    from astropy.coordinates.coordinate import Coordinate
+
+    fa = {k: getattr(coord.frame, k) for k in type(coord.frame).frame_attributes}
+    fa.update(frame_attrs)
+    return Coordinate(frame=type(coord.frame)(**fa), data=coord.data)
+
+
 # We don't want to run doctests in the docstrings we inherit from Quantity
 __doctest_skip__ = ["SpectralCoord.*"]
 
@@ -89,7 +112,9 @@ def update_differentials_to_match(
     if "obstime" in velocity_reference.frame_attributes and hasattr(
         original, "obstime"
     ):
-        velocity_reference = velocity_reference.replicate(obstime=original.obstime)
+        velocity_reference = _replicate_frame_attrs(
+            velocity_reference, obstime=original.obstime
+        )
 
     # We transform both coordinates to ICRS for simplicity and because we know
     # it's a simple frame that is not time-dependent (it could be that both
@@ -106,14 +131,15 @@ def update_differentials_to_match(
         CartesianRepresentation
     ).with_differentials(differentials)
 
-    final_icrs = original_icrs.realize_frame(data_with_differentials)
+    final_icrs = _coord_with_data(original_icrs, data_with_differentials)
 
     if preserve_observer_frame:
         final = final_icrs.transform_to(original)
     else:
         final = final_icrs.transform_to(velocity_reference)
 
-    return final.replicate(
+    return _replicate_frame_attrs(
+        final,
         representation_type=CartesianRepresentation,
         differential_type=CartesianDifferential,
     )
@@ -124,7 +150,7 @@ def attach_zero_velocities(coord):
     Set the differentials to be stationary on a coordinate object.
     """
     new_data = coord.cartesian.with_differentials(ZERO_VELOCITIES)
-    return coord.realize_frame(new_data)
+    return _coord_with_data(coord, new_data)
 
 
 def _get_velocities(coord):
@@ -267,7 +293,7 @@ class SpectralCoord(SpectralQuantity):
         if not issubclass(coord.__class__, BaseCoordinateFrame):
             if isinstance(coord, SkyCoord):
                 # TODO: APE23: update when BaseCoordinateFrame is deprecated
-                coord = coord.frame.realize_frame(coord.data)
+                coord = _coord_with_data(coord.frame, coord.data)
             else:
                 raise TypeError(
                     f"{label} must be a SkyCoord or coordinate frame instance"
@@ -597,12 +623,13 @@ class SpectralCoord(SpectralQuantity):
 
         # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         if isinstance(frame, SkyCoord):
-            frame = frame.frame.realize_frame(frame.data)
+            frame = _coord_with_data(frame.frame, frame.data)
 
         if isinstance(frame, BaseCoordinateFrame):
             if not frame.has_data:
-                frame = frame.realize_frame(
-                    CartesianRepresentation(0 * u.km, 0 * u.km, 0 * u.km)
+                frame = _coord_with_data(
+                    frame,
+                    CartesianRepresentation(0 * u.km, 0 * u.km, 0 * u.km),
                 )
 
             if frame.data.differentials:
@@ -616,8 +643,8 @@ class SpectralCoord(SpectralQuantity):
                     differentials = ZERO_VELOCITIES
                 else:
                     differentials = CartesianDifferential(velocity)
-                frame = frame.realize_frame(
-                    frame.data.with_differentials(differentials)
+                frame = _coord_with_data(
+                    frame, frame.data.with_differentials(differentials)
                 )
 
         if isinstance(frame, (type, str)):
@@ -722,12 +749,12 @@ class SpectralCoord(SpectralQuantity):
         target_velocity = CartesianDifferential(target_velocity.xyz)
         observer_velocity = CartesianDifferential(observer_velocity.xyz)
 
-        new_target = target_icrs.realize_frame(
-            target_icrs.cartesian.with_differentials(target_velocity)
+        new_target = _coord_with_data(
+            target_icrs, target_icrs.cartesian.with_differentials(target_velocity)
         ).transform_to(self._target)
 
-        new_observer = observer_icrs.realize_frame(
-            observer_icrs.cartesian.with_differentials(observer_velocity)
+        new_observer = _coord_with_data(
+            observer_icrs, observer_icrs.cartesian.with_differentials(observer_velocity)
         ).transform_to(self._observer)
 
         init_obs_vel = self._calculate_radial_velocity(observer_icrs, target_icrs)

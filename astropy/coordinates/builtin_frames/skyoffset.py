@@ -4,12 +4,33 @@ from functools import cache
 
 from astropy import units as u
 from astropy.coordinates.attributes import CoordinateAttribute, QuantityAttribute
-from astropy.coordinates.baseframe import BaseFrame, frame_transform_graph
+from astropy.coordinates.baseframe import (
+    BaseCoordinateFrame,
+    BaseFrame,
+    frame_transform_graph,
+)
 from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix
 from astropy.coordinates.transformations import (
     DynamicMatrixTransform,
     FunctionTransform,
+    RepresentationFunctionTransform,
 )
+
+
+def _apply_rotation(R, rep):
+    """Apply a rotation matrix R to rep (a BaseRepresentation), including differentials."""
+    from astropy.coordinates.representation import (
+        CartesianDifferential,
+        CartesianRepresentation,
+    )
+
+    if rep.differentials:
+        cart = rep.represent_as(
+            CartesianRepresentation,
+            differential_class={"s": CartesianDifferential},
+        )
+        return cart.transform(R)
+    return rep.represent_as(CartesianRepresentation).transform(R)
 
 
 @cache
@@ -57,18 +78,37 @@ def make_skyoffset_cls(framecls):
         },
     )
 
-    # TODO: APE23: consider converting to RepresentationFunctionTransform
-    # for velocity support when legacy frames are deprecated
-    @frame_transform_graph.transform(
-        FunctionTransform, _SkyOffsetFramecls, _SkyOffsetFramecls
-    )
-    def skyoffset_to_skyoffset(from_skyoffset_coord, to_skyoffset_frame):
-        """Transform between two skyoffset frames."""
-        # This transform goes through the parent frames on each side.
-        # from_frame -> from_frame.origin -> to_frame.origin -> to_frame
-        tmp_from = from_skyoffset_coord.transform_to(from_skyoffset_coord.origin)
-        tmp_to = tmp_from.transform_to(to_skyoffset_frame.origin)
-        return tmp_to.transform_to(to_skyoffset_frame)
+    # TODO: APE23: remove the FunctionTransform branch when legacy frames are deprecated
+    if issubclass(framecls, BaseCoordinateFrame):
+        # Legacy path: framecls is a BaseCoordinateFrame subclass
+        @frame_transform_graph.transform(
+            FunctionTransform, _SkyOffsetFramecls, _SkyOffsetFramecls
+        )
+        def _skyoffset_to_skyoffset_legacy(from_skyoffset_coord, to_skyoffset_frame):
+            """Transform between two skyoffset frames."""
+            # from_frame -> from_frame.origin -> to_frame.origin -> to_frame
+            tmp_from = from_skyoffset_coord.transform_to(from_skyoffset_coord.origin)
+            tmp_to = tmp_from.transform_to(to_skyoffset_frame.origin)
+            return tmp_to.transform_to(to_skyoffset_frame)
+    else:
+        # New path: framecls is a BaseFrame subclass
+        @frame_transform_graph.transform(
+            RepresentationFunctionTransform, _SkyOffsetFramecls, _SkyOffsetFramecls
+        )
+        def _skyoffset_to_skyoffset(from_skyoffset_frame, to_skyoffset_frame):
+            """Transform between two skyoffset frames."""
+            # reference_to_skyoffset only uses .origin and .rotation;
+            # the first (reference_frame) argument is unused.
+            R_to = reference_to_skyoffset(None, to_skyoffset_frame)
+            R_from_inv = matrix_transpose(
+                reference_to_skyoffset(None, from_skyoffset_frame)
+            )
+            R = R_to @ R_from_inv
+
+            def converter(rep):
+                return _apply_rotation(R, rep)
+
+            return converter
 
     @frame_transform_graph.transform(
         DynamicMatrixTransform, framecls, _SkyOffsetFramecls

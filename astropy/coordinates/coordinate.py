@@ -1042,3 +1042,64 @@ class Coordinate(BaseCoordinate, MaskableShapedLikeNDArray):
         """
         new_data = self.frame.transform_data_to(new_frame, self.data)
         return Coordinate(frame=new_frame, data=new_data)
+
+    def __setitem__(self, item, value):
+        if value is np.ma.masked or value is np.ma.nomask:
+            self._data.__setitem__(item, value)
+            return
+
+        if self.__class__ is not value.__class__:
+            raise TypeError(
+                "can only set from object of same class: "
+                f"{self.__class__.__name__} vs. {value.__class__.__name__}"
+            )
+
+        if not self._frame.is_equivalent_frame(value._frame):
+            raise ValueError("cannot set: frames are not equivalent")
+
+        if self._data.__class__ is not value._data.__class__:
+            raise TypeError(
+                "can only set from object of same class: "
+                f"{self._data.__class__.__name__} vs. {value._data.__class__.__name__}"
+            )
+
+        if self._data._differentials:
+            if self._data._differentials.keys() != value._data._differentials.keys():
+                raise ValueError("setitem value must have same differentials")
+            for key, self_diff in self._data._differentials.items():
+                if self_diff.__class__ is not value._data._differentials[key].__class__:
+                    raise TypeError(
+                        "can only set from object of same class: "
+                        f"{self_diff.__class__.__name__} vs. "
+                        f"{value._data._differentials[key].__class__.__name__}"
+                    )
+
+        if self._data.shape == ():
+            clsnm = type(self._frame).__name__.removesuffix("Frame")
+            raise TypeError(
+                f"scalar '{clsnm}' frame object does not support item assignment"
+            )
+
+        self._data[item] = value._data
+
+    def insert(self, obj, values, axis=0):
+        """
+        Make a copy with coordinate values inserted before the given indices.
+
+        Parameters
+        ----------
+        obj : int
+            Integer index before which ``values`` is inserted.
+        values : array-like
+            Value(s) to insert.  If the type of ``values`` is different
+            from that of quantity, ``values`` is converted to the matching type.
+        axis : int, optional
+            Axis along which to insert ``values``.  Default is 0, which is the
+            only allowed value and will insert a row.
+
+        Returns
+        -------
+        coord : `Coordinate`
+            Copy of instance with new values inserted.
+        """
+        return self.info._insert(obj, values, axis)
