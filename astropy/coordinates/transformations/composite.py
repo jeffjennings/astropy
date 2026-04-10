@@ -17,6 +17,7 @@ from astropy.coordinates.transformations.affine import (
 from astropy.coordinates.transformations.base import CoordinateTransform
 from astropy.coordinates.transformations.function import (
     FunctionTransformWithFiniteDifference,
+    RepresentationFunctionTransformWithFiniteDifference,
 )
 
 __all__ = ["CompositeTransform"]
@@ -184,14 +185,19 @@ class CompositeTransform(CoordinateTransform):
                         if k in t.tosys.frame_attributes
                     }
 
-                    # Obtain the affine parameters for the transform
-                    # Note that we insert some dummy data into frame A because the transformation
-                    #   machinery requires there to be data present.  Removing that limitation
-                    #   is a possible TODO, but some care would need to be taken because some affine
-                    #   transforms have branching code depending on the presence of differentials.
-                    next_affine_params = t._affine_params(
-                        t.fromsys(from_coo.data, **a_attr), t.tosys(**b_attr)
-                    )
+                    # Obtain the affine parameters for the transform.
+                    # DynamicMatrixTransform matrix_funcs only read frame
+                    # attributes, not data. During the APE23 deprecation period,
+                    # still pass data so that BaseCoordinateFrame subclasses accept the
+                    # argument.
+                    # TODO: APE23: simplify to t.fromsys(**a_attr) when BaseCoordinateFrame is deprecated
+                    from astropy.coordinates.baseframe import BaseCoordinateFrame
+
+                    if issubclass(t.fromsys, BaseCoordinateFrame):
+                        from_a = t.fromsys(from_coo.data, **a_attr)
+                    else:
+                        from_a = t.fromsys(**a_attr)
+                    next_affine_params = t._affine_params(from_a, t.tosys(**b_attr))
 
                     # Combine the affine parameters with the running set
                     affine_params = _combine_affine_params(
@@ -204,13 +210,33 @@ class CompositeTransform(CoordinateTransform):
             # The return type depends on whether there is any origin shift
             transform_type = DynamicMatrixTransform if fixed_origin else AffineTransform
         else:
-            # Dynamically define the transformation function
-            def single_transform(from_coo, to_frame):
-                if from_coo.is_equivalent_frame(to_frame):  # loopback to the same frame
-                    return to_frame.realize_frame(from_coo.data)
-                return self(from_coo, to_frame)
+            # TODO: APE23: remove the FunctionTransformWithFiniteDifference branch
+            # when legacy frames are deprecated
+            from astropy.coordinates.baseframe import BaseCoordinateFrame
 
-            transform_type = FunctionTransformWithFiniteDifference
+            if issubclass(self.fromsys, BaseCoordinateFrame):
+                # Legacy path: frames carry their own data
+                def single_transform(from_coo, to_frame):
+                    if from_coo.is_equivalent_frame(to_frame):
+                        return to_frame.realize_frame(from_coo.data)
+                    return self(from_coo, to_frame)
+
+                transform_type = FunctionTransformWithFiniteDifference
+            else:
+                # New path: function takes two dataless frames and returns a
+                # callable (rep -> rep)
+                def single_transform(from_frame, to_frame):
+                    def converter(rep):
+                        if from_frame.is_equivalent_frame(to_frame):
+                            return rep
+                        from astropy.coordinates.coordinate import Coordinate
+
+                        coord = Coordinate(frame=from_frame, data=rep)
+                        return self(coord, to_frame).data
+
+                    return converter
+
+                transform_type = RepresentationFunctionTransformWithFiniteDifference
 
         return transform_type(
             single_transform, self.fromsys, self.tosys, priority=self.priority

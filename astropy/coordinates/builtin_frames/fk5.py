@@ -3,14 +3,14 @@
 import erfa
 
 from astropy.coordinates.attributes import TimeAttribute
-from astropy.coordinates.baseframe import base_doc, frame_transform_graph
+from astropy.coordinates.baseframe import BaseCoordinateFrame, base_doc, base_doc_frame, frame_transform_graph
 from astropy.coordinates.transformations import DynamicMatrixTransform
 from astropy.utils.decorators import format_doc
 
 from .baseradec import BaseRADecFrame, doc_components
 from .utils import EQUINOX_J2000, get_jd12
 
-__all__ = ["FK5"]
+__all__ = ["FK5", "FK5Frame"]
 
 
 doc_footer = """
@@ -21,8 +21,8 @@ doc_footer = """
 """
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer)
-class FK5(BaseRADecFrame):
+@format_doc(base_doc_frame, footer=doc_footer)
+class FK5Frame(BaseRADecFrame):
     """
     A coordinate or frame in the FK5 system.
 
@@ -30,8 +30,16 @@ class FK5(BaseRADecFrame):
     this frame is the Solar System Barycenter, *not* the Earth geocenter.
 
     The frame attributes are listed under **Other Parameters**.
+
+    NOTE:
+    This class only holds metadata defining the FK5 reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `FK5` class.
     """
 
+    name = "fk5"
+    
     equinox = TimeAttribute(default=EQUINOX_J2000, doc="The equinox time")
 
     @staticmethod
@@ -61,6 +69,18 @@ class FK5(BaseRADecFrame):
         J2000_to_toepoch = erfa.bp06(*get_jd12(newequinox, "tt"))[1]
         return J2000_to_toepoch @ fromepoch_to_J2000
 
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer)
+class FK5(BaseCoordinateFrame, FK5Frame):
+    """
+    A coordinate or frame in the FK5 system.
+
+    Note that this is a barycentric version of FK5 - that is, the origin for
+    this frame is the Solar System Barycenter, *not* the Earth geocenter.
+
+    The frame attributes are listed under **Other Parameters**.
+    """
+    pass
 
 # This is the "self-transform".  Defined at module level because the decorator
 #  needs a reference to the FK5 class

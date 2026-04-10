@@ -9,6 +9,7 @@ between coordinate systems.
 from .angles import *
 from .attributes import *
 from .baseframe import *
+from .coordinate import *
 from .builtin_frames import *
 from .calculation import *
 from .distances import *

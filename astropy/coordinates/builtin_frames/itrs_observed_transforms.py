@@ -3,13 +3,17 @@ import numpy as np
 
 from astropy import units as u
 from astropy.coordinates.baseframe import frame_transform_graph
+from astropy.coordinates.coordinate import Coordinate
 from astropy.coordinates.matrix_utilities import matrix_transpose, rotation_matrix
 from astropy.coordinates.representation import CartesianRepresentation
-from astropy.coordinates.transformations import FunctionTransformWithFiniteDifference
+from astropy.coordinates.transformations import (
+    FunctionTransformWithFiniteDifference,
+    RepresentationFunctionTransformWithFiniteDifference,
+)
 
-from .altaz import AltAz
-from .hadec import HADec
-from .itrs import ITRS
+from .altaz import AltAz, AltAzFrame
+from .hadec import HADec, HADecFrame
+from .itrs import ITRS, ITRSFrame
 
 # Minimum cos(alt) and sin(alt) for refraction purposes
 CELMIN = 1e-6
@@ -95,50 +99,106 @@ def remove_refraction(aa_crepr, observed_frame):
     return CartesianRepresentation(uv, xyz_axis=-1, unit=aa_crepr.x.unit, copy=False)
 
 
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, AltAzFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, HADecFrame
+)
+def itrs_to_observed(itrs_frame, observed_frame):
+    needs_reroute = np.any(itrs_frame.location != observed_frame.location) or np.any(
+        itrs_frame.obstime != observed_frame.obstime
+    )
+    lon, lat, height = observed_frame.location.to_geodetic("WGS84")
+    use_altaz = isinstance(observed_frame, AltAzFrame) or (
+        observed_frame.pressure > 0.0
+    )
+    apply_refraction = observed_frame.pressure > 0.0
+    is_hadec = isinstance(observed_frame, HADecFrame)
+    mat = itrs_to_altaz_mat(lon, lat) if use_altaz else itrs_to_hadec_mat(lon)
+
+    def converter(rep):
+        cart = rep.represent_as(CartesianRepresentation)
+        if needs_reroute:
+            # This transform will go through the CIRS and alter stellar aberration.
+            cart = (
+                Coordinate(
+                    ITRSFrame(obstime=itrs_frame.obstime, location=itrs_frame.location),
+                    cart,
+                )
+                .transform_to(
+                    ITRSFrame(
+                        obstime=observed_frame.obstime, location=observed_frame.location
+                    )
+                )
+                .data
+            )
+        result = cart.transform(mat)
+        if apply_refraction:
+            result = add_refraction(result, observed_frame)
+            if is_hadec:
+                result = result.transform(altaz_to_hadec_mat(lat))
+        return result
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, AltAz)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, HADec)
-def itrs_to_observed(itrs_coo, observed_frame):
-    if np.any(itrs_coo.location != observed_frame.location) or np.any(
-        itrs_coo.obstime != observed_frame.obstime
-    ):
-        # This transform will go through the CIRS and alter stellar aberration.
-        itrs_coo = itrs_coo.transform_to(
-            ITRS(obstime=observed_frame.obstime, location=observed_frame.location)
-        )
+def itrs_to_observed_legacy(itrs_coo, observed_frame):
+    converter = itrs_to_observed(itrs_coo, observed_frame)
+    return observed_frame.realize_frame(converter(itrs_coo.cartesian))
 
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, AltAzFrame, ITRSFrame
+)
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, HADecFrame, ITRSFrame
+)
+def observed_to_itrs(observed_frame, itrs_frame):
     lon, lat, height = observed_frame.location.to_geodetic("WGS84")
+    is_altaz = isinstance(observed_frame, AltAzFrame)
+    apply_refraction = observed_frame.pressure > 0.0
+    is_hadec = isinstance(observed_frame, HADecFrame)
+    needs_reroute = np.any(observed_frame.obstime != itrs_frame.obstime) or np.any(
+        observed_frame.location != itrs_frame.location
+    )
 
-    if isinstance(observed_frame, AltAz) or (observed_frame.pressure > 0.0):
-        crepr = itrs_coo.cartesian.transform(itrs_to_altaz_mat(lon, lat))
-        if observed_frame.pressure > 0.0:
-            crepr = add_refraction(crepr, observed_frame)
-            if isinstance(observed_frame, HADec):
-                crepr = crepr.transform(altaz_to_hadec_mat(lat))
-    else:
-        crepr = itrs_coo.cartesian.transform(itrs_to_hadec_mat(lon))
-    return observed_frame.realize_frame(crepr)
+    def converter(rep):
+        cart = rep.represent_as(CartesianRepresentation)
+        if is_altaz or apply_refraction:
+            if apply_refraction:
+                if is_hadec:
+                    cart = cart.transform(matrix_transpose(altaz_to_hadec_mat(lat)))
+                cart = remove_refraction(cart, observed_frame)
+            cart = cart.transform(matrix_transpose(itrs_to_altaz_mat(lon, lat)))
+        else:
+            cart = cart.transform(matrix_transpose(itrs_to_hadec_mat(lon)))
+        # This final transform may be a no-op if the obstimes and locations are the same.
+        # Otherwise, this transform will go through the CIRS and alter stellar aberration.
+        if needs_reroute:
+            return (
+                Coordinate(
+                    ITRSFrame(
+                        obstime=observed_frame.obstime, location=observed_frame.location
+                    ),
+                    cart,
+                )
+                .transform_to(
+                    ITRSFrame(obstime=itrs_frame.obstime, location=itrs_frame.location)
+                )
+                .data
+            )
+        return cart
+
+    return converter
 
 
+# TODO: APE23: remove when legacy frames are deprecated
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz, ITRS)
 @frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec, ITRS)
-def observed_to_itrs(observed_coo, itrs_frame):
-    lon, lat, height = observed_coo.location.to_geodetic("WGS84")
-
-    if isinstance(observed_coo, AltAz) or (observed_coo.pressure > 0.0):
-        crepr = observed_coo.cartesian
-        if observed_coo.pressure > 0.0:
-            if isinstance(observed_coo, HADec):
-                crepr = crepr.transform(matrix_transpose(altaz_to_hadec_mat(lat)))
-            crepr = remove_refraction(crepr, observed_coo)
-        crepr = crepr.transform(matrix_transpose(itrs_to_altaz_mat(lon, lat)))
-    else:
-        crepr = observed_coo.cartesian.transform(
-            matrix_transpose(itrs_to_hadec_mat(lon))
-        )
-
-    itrs_at_obs_time = ITRS(
-        crepr, obstime=observed_coo.obstime, location=observed_coo.location
-    )
-    # This final transform may be a no-op if the obstimes and locations are the same.
-    # Otherwise, this transform will go through the CIRS and alter stellar aberration.
-    return itrs_at_obs_time.transform_to(itrs_frame)
+def observed_to_itrs_legacy(observed_coo, itrs_frame):
+    converter = observed_to_itrs(observed_coo, itrs_frame)
+    return itrs_frame.realize_frame(converter(observed_coo.cartesian))

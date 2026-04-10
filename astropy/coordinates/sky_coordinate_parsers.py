@@ -10,6 +10,7 @@ from astropy.units import IrreducibleUnit, Unit
 
 from .baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     _get_diff_cls,
     _get_repr_cls,
     frame_transform_graph,
@@ -109,21 +110,33 @@ def _get_frame_without_data(args, kwargs):
                     _conflict_err_msg.format(attr, value, kwargs[attr], "SkyCoord")
                 )
         frame = frame.frame
+        # TODO: APE23: simplify when BaseCoordinateFrame deprecated
+        if isinstance(frame, BaseFrame) and not isinstance(frame, BaseCoordinateFrame):
+            for sub in type(frame).__subclasses__():
+                if issubclass(sub, BaseCoordinateFrame):
+                    fa = {
+                        k: getattr(frame, k)
+                        for k in type(frame).frame_attributes
+                        if not frame.is_frame_attr_default(k)
+                    }
+                    frame = sub(**fa)
+                    break
 
+    # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
     if isinstance(frame, BaseCoordinateFrame):
-        # Extract any frame attributes
+        # Extract any frame attributes, checking for conflicts with kwargs.
         for attr in frame.frame_attributes:
-            # If the frame was specified as an instance, we have to make
-            # sure that no frame attributes were specified as kwargs - this
-            # would require a potential three-way merge:
             if attr in kwargs:
-                raise ValueError(
-                    f"Cannot specify frame attribute '{attr}' directly as an"
-                    " argument to SkyCoord because a frame instance was passed in."
-                    " Either pass a frame class, or modify the frame attributes of"
-                    " the input frame instance."
-                )
-            if not frame.is_frame_attr_default(attr):
+                if not frame.is_frame_attr_default(attr):
+                    frame_val = getattr(frame, attr)
+                    if np.any(frame_val != kwargs[attr]):
+                        raise ValueError(
+                            f"Frame attribute '{attr}' has conflicting values between"
+                            " the input frame instance and keyword arguments: "
+                            f"{frame_val!r} =/= {kwargs[attr]!r}"
+                        )
+                # Values match (or frame uses default) — kwarg wins, leave as-is.
+            elif not frame.is_frame_attr_default(attr):
                 kwargs[attr] = getattr(frame, attr)
 
         frame_cls = frame.__class__
@@ -151,6 +164,31 @@ def _get_frame_without_data(args, kwargs):
             coord_frame_obj = arg
         elif isinstance(arg, SkyCoord):
             coord_frame_obj = arg.frame
+            # TODO: APE23: simplify when BaseCoordinateFrame deprecated
+            if not isinstance(coord_frame_obj, BaseCoordinateFrame):
+                for sub in type(coord_frame_obj).__subclasses__():
+                    if issubclass(sub, BaseCoordinateFrame):
+                        # Only pass non-default frame attrs
+                        fa = {
+                            k: getattr(coord_frame_obj, k)
+                            for k in type(coord_frame_obj).frame_attributes
+                            if not coord_frame_obj.is_frame_attr_default(k)
+                        }
+                        coord_frame_obj = sub(**fa)
+                        break
+        elif isinstance(arg, BaseFrame):
+            # TODO: APE23: simplify when BaseCoordinateFrame deprecated
+            for sub in type(arg).__subclasses__():
+                if issubclass(sub, BaseCoordinateFrame):
+                    fa = {
+                        k: getattr(arg, k)
+                        for k in type(arg).frame_attributes
+                        if not arg.is_frame_attr_default(k)
+                    }
+                    coord_frame_obj = sub(**fa)
+                    break
+            else:
+                continue
         else:
             continue
 
@@ -180,6 +218,7 @@ def _get_frame_without_data(args, kwargs):
         frame_cls = ICRS
 
     # By now, frame_cls should be set - if it's not, something went wrong
+    # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
     if not issubclass(frame_cls, BaseCoordinateFrame):
         # We should hopefully never get here...
         raise ValueError(f"Frame class has unexpected type: {frame_cls.__name__}")
@@ -361,6 +400,7 @@ def _parse_coordinate_arg(coords, frame, units):
         is_scalar = True
         coords = [coords]
 
+    # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
     if isinstance(coords, (SkyCoord, BaseCoordinateFrame)):
         # Note that during parsing of `frame` it is checked that any coordinate
         # args have the same frame as explicitly supplied, so don't worry here.

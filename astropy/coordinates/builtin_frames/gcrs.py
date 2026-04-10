@@ -5,13 +5,13 @@ from astropy.coordinates.attributes import (
     CartesianRepresentationAttribute,
     TimeAttribute,
 )
-from astropy.coordinates.baseframe import base_doc
+from astropy.coordinates.baseframe import BaseCoordinateFrame, base_doc, base_doc_frame
 from astropy.utils.decorators import format_doc
 
 from .baseradec import BaseRADecFrame, doc_components
 from .utils import DEFAULT_OBSTIME, EQUINOX_J2000
 
-__all__ = ["GCRS", "PrecessedGeocentric"]
+__all__ = ["GCRS", "PrecessedGeocentric", "GCRSFrame", "PrecessedGeocentricFrame"]
 
 
 doc_footer_gcrs = """
@@ -35,8 +35,50 @@ doc_footer_gcrs = """
 """
 
 
+@format_doc(base_doc_frame, footer=doc_footer_gcrs)
+class GCRSFrame(BaseRADecFrame):
+    """
+    A coordinate or frame in the Geocentric Celestial Reference System (GCRS).
+
+    GCRS is distinct from ICRS mainly in that it is relative to the Earth's
+    center-of-mass rather than the solar system Barycenter.  That means this
+    frame includes the effects of aberration (unlike ICRS). For more background
+    on the GCRS, see the references provided in the
+    :ref:`astropy:astropy-coordinates-seealso` section of the documentation. (Of
+    particular note is Section 1.2 of
+    `USNO Circular 179 <https://arxiv.org/abs/astro-ph/0602086>`_)
+
+    This frame also includes frames that are defined *relative* to the Earth,
+    but that are offset (in both position and velocity) from the Earth.
+
+    The frame attributes are listed under **Other Parameters**.
+
+    NOTE:
+    This class only holds metadata defining the GCRS reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `GCRS` class.    
+    """
+
+    name = "gcrs"
+
+    obstime = TimeAttribute(
+        default=DEFAULT_OBSTIME, doc="The reference time (e.g., time of observation)"
+    )
+    obsgeoloc = CartesianRepresentationAttribute(
+        default=[0, 0, 0],
+        unit=u.m,
+        doc="The observer location relative to Earth center",
+    )
+    obsgeovel = CartesianRepresentationAttribute(
+        default=[0, 0, 0],
+        unit=u.m / u.s,
+        doc="The observer velocity relative to Earth center",
+    )
+
+
 @format_doc(base_doc, components=doc_components, footer=doc_footer_gcrs)
-class GCRS(BaseRADecFrame):
+class GCRS(BaseCoordinateFrame, GCRSFrame):
     """
     A coordinate or frame in the Geocentric Celestial Reference System (GCRS).
 
@@ -53,20 +95,7 @@ class GCRS(BaseRADecFrame):
 
     The frame attributes are listed under **Other Parameters**.
     """
-
-    obstime = TimeAttribute(
-        default=DEFAULT_OBSTIME, doc="The reference time (e.g., time of observation)"
-    )
-    obsgeoloc = CartesianRepresentationAttribute(
-        default=[0, 0, 0],
-        unit=u.m,
-        doc="The observer location relative to Earth center",
-    )
-    obsgeovel = CartesianRepresentationAttribute(
-        default=[0, 0, 0],
-        unit=u.m / u.s,
-        doc="The observer velocity relative to Earth center",
-    )
+    pass
 
 
 # The "self-transform" is defined in icrs_cirs_transformations.py, because in
@@ -96,8 +125,8 @@ doc_footer_prec_geo = """
 """
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer_prec_geo)
-class PrecessedGeocentric(BaseRADecFrame):
+@format_doc(base_doc_frame, footer=doc_footer_prec_geo)
+class PrecessedGeocentricFrame(BaseRADecFrame):
     """
     A coordinate frame defined in a similar manner as GCRS, but precessed to a
     requested (mean) equinox.  Note that this does *not* end up the same as
@@ -106,7 +135,15 @@ class PrecessedGeocentric(BaseRADecFrame):
     orientation.
 
     The frame attributes are listed under **Other Parameters**
+
+    NOTE:
+    This class only holds metadata defining the PrecessedGeocentric reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `PrecessedGeocentric` class.    
     """
+
+    name = "precessedgeocentric"
 
     equinox = TimeAttribute(default=EQUINOX_J2000, doc="The equinox time")
     obstime = TimeAttribute(
@@ -122,3 +159,17 @@ class PrecessedGeocentric(BaseRADecFrame):
         unit=u.m / u.s,
         doc="The observer velocity relative to Earth center",
     )
+
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer_prec_geo)
+class PrecessedGeocentric(BaseCoordinateFrame, PrecessedGeocentricFrame):
+    """
+    A coordinate frame defined in a similar manner as GCRS, but precessed to a
+    requested (mean) equinox.  Note that this does *not* end up the same as
+    regular GCRS even for J2000 equinox, because the GCRS orientation is fixed
+    to that of ICRS, which is not quite the same as the dynamical J2000
+    orientation.
+
+    The frame attributes are listed under **Other Parameters**
+    """
+    pass

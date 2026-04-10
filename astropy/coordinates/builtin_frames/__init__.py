@@ -25,32 +25,40 @@ circular dependencies, because they need references to the frame classes.
 
 from astropy.coordinates.baseframe import frame_transform_graph
 
-from .altaz import AltAz
+from .altaz import AltAz, AltAzFrame
 from .baseradec import BaseRADecFrame
-from .cirs import CIRS
+from .cirs import CIRS, CIRSFrame
 from .ecliptic import (
     BarycentricMeanEcliptic,
+    BarycentricMeanEclipticFrame,
     BarycentricTrueEcliptic,
+    BarycentricTrueEclipticFrame,
     BaseEclipticFrame,
     CustomBarycentricEcliptic,
+    CustomBarycentricEclipticFrame,
     GeocentricMeanEcliptic,
+    GeocentricMeanEclipticFrame,
     GeocentricTrueEcliptic,
+    GeocentricTrueEclipticFrame,
     HeliocentricEclipticIAU76,
+    HeliocentricEclipticIAU76Frame,
     HeliocentricMeanEcliptic,
+    HeliocentricMeanEclipticFrame,
     HeliocentricTrueEcliptic,
+    HeliocentricTrueEclipticFrame,
 )
-from .equatorial import TEME, TETE
-from .fk4 import FK4, FK4NoETerms
-from .fk5 import FK5
-from .galactic import Galactic
-from .galactocentric import Galactocentric, galactocentric_frame_defaults
-from .gcrs import GCRS, PrecessedGeocentric
-from .hadec import HADec
-from .hcrs import HCRS
-from .icrs import ICRS
-from .itrs import ITRS
+from .equatorial import TEME, TETE, TEMEFrame, TETEFrame
+from .fk4 import FK4, FK4NoETerms, FK4Frame, FK4NoETermsFrame
+from .fk5 import FK5, FK5Frame
+from .galactic import Galactic, GalacticFrame
+from .galactocentric import Galactocentric, GalactocentricFrame, galactocentric_frame_defaults
+from .gcrs import GCRS, PrecessedGeocentric, GCRSFrame, PrecessedGeocentricFrame
+from .hadec import HADec, HADecFrame
+from .hcrs import HCRS, HCRSFrame
+from .icrs import ICRS, ICRSFrame
+from .itrs import ITRS, ITRSFrame
 from .skyoffset import SkyOffsetFrame
-from .supergalactic import Supergalactic
+from .supergalactic import Supergalactic, SupergalacticFrame
 
 # isort: split
 # need to import transformations so that they get registered in the graph
@@ -72,7 +80,7 @@ from . import ecliptic_transforms
 # isort: split
 # Import this after importing other frames, since this requires various
 # transformations to set up the LSR frames
-from .lsr import LSR, LSRD, LSRK, GalacticLSR
+from .lsr import LSR, LSRD, LSRK, GalacticLSR, LSRFrame, LSRDFrame, LSRKFrame, GalacticLSRFrame
 
 # we define an __all__ because otherwise the transformation modules
 # get included.  Note that the order here determines the order in the
@@ -84,33 +92,61 @@ from .lsr import LSR, LSRD, LSRK, GalacticLSR
 # ref https://github.com/astropy/astropy/pull/17437#discussion_r1856780149
 __all__ = [  # noqa: RUF022, RUF100
     "ICRS",
+    "ICRSFrame",
     "FK5",
+    "FK5Frame",
     "FK4",
+    "FK4Frame",
     "FK4NoETerms",
+    "FK4NoETermsFrame",
     "Galactic",
+    "GalacticFrame",
     "Galactocentric",
+    "GalactocentricFrame",
     "Supergalactic",
+    "SupergalacticFrame",
     "AltAz",
+    "AltAzFrame",
     "HADec",
+    "HADecFrame",
     "GCRS",
+    "GCRSFrame",
     "CIRS",
+    "CIRSFrame",
     "ITRS",
+    "ITRSFrame",
     "HCRS",
+    "HCRSFrame",
     "TEME",
+    "TEMEFrame",
     "TETE",
+    "TETEFrame",
     "PrecessedGeocentric",
+    "PrecessedGeocentricFrame",
     "GeocentricMeanEcliptic",
+    "GeocentricMeanEclipticFrame",
     "BarycentricMeanEcliptic",
+    "BarycentricMeanEclipticFrame",
     "HeliocentricMeanEcliptic",
+    "HeliocentricMeanEclipticFrame",
     "GeocentricTrueEcliptic",
+    "GeocentricTrueEclipticFrame",
     "BarycentricTrueEcliptic",
+    "BarycentricTrueEclipticFrame",
     "HeliocentricTrueEcliptic",
+    "HeliocentricTrueEclipticFrame",
     "HeliocentricEclipticIAU76",
+    "HeliocentricEclipticIAU76Frame",
     "CustomBarycentricEcliptic",
+    "CustomBarycentricEclipticFrame",
     "LSR",
+    "LSRFrame",
     "LSRK",
+    "LSRKFrame",
     "LSRD",
+    "LSRDFrame",
     "GalacticLSR",
+    "GalacticLSRFrame",
     "SkyOffsetFrame",
     "BaseEclipticFrame",
     "BaseRADecFrame",

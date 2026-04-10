@@ -2,9 +2,9 @@
 
 from astropy.coordinates import representation as r
 from astropy.coordinates.baseframe import (
-    BaseCoordinateFrame,
+    BaseFrame,
     RepresentationMapping,
-    base_doc,
+    base_doc_frame,
 )
 from astropy.utils.decorators import format_doc
 
@@ -33,8 +33,8 @@ doc_components = """
 """
 
 
-@format_doc(base_doc, components=doc_components, footer="")
-class BaseRADecFrame(BaseCoordinateFrame):
+@format_doc(base_doc_frame, footer="")
+class BaseRADecFrame(BaseFrame):
     """
     A base class that defines default representation info for frames that
     represent longitude and latitude as Right Ascension and Declination

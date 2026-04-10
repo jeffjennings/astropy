@@ -49,11 +49,11 @@ def assert_frame_allclose(
     # - either both or nether frame has velocities, or if one has no velocities
     #   the other one can have zero velocities
     # - if velocities are present, they are equal to some tolerance
-    # Ideally this should accept both frames and SkyCoords
-    if hasattr(frame1, "frame"):  # SkyCoord-like
-        frame1 = frame1.frame
-    if hasattr(frame2, "frame"):  # SkyCoord-like
-        frame2 = frame2.frame
+    # NOTE: APE23: sc.frame is now data-less
+    if isinstance(frame1, SkyCoord):
+        frame1 = frame1.frame.realize_frame(frame1.data)
+    if isinstance(frame2, SkyCoord):
+        frame2 = frame2.frame.realize_frame(frame2.data)
 
     # assert (frame1.data.differentials and frame2.data.differentials or
     #         (not frame1.data.differentials and not frame2.data.differentials))

@@ -9,17 +9,29 @@ import erfa
 import numpy as np
 
 from astropy.coordinates.baseframe import frame_transform_graph
+from astropy.coordinates.coordinate import Coordinate
 from astropy.coordinates.matrix_utilities import matrix_transpose
-from astropy.coordinates.transformations import FunctionTransformWithFiniteDifference
+from astropy.coordinates.transformations import (
+    FunctionTransformWithFiniteDifference,
+    RepresentationFunctionTransformWithFiniteDifference,
+)
 
-from .cirs import CIRS
-from .equatorial import TEME, TETE
-from .gcrs import GCRS, PrecessedGeocentric
-from .icrs import ICRS
-from .itrs import ITRS
+from .cirs import CIRS, CIRSFrame
+from .equatorial import TEME, TETE, TEMEFrame, TETEFrame
+from .gcrs import GCRS, GCRSFrame, PrecessedGeocentric, PrecessedGeocentricFrame
+from .icrs import ICRS, ICRSFrame
+from .itrs import ITRS, ITRSFrame
 from .utils import get_jd12, get_polar_motion
 
 # # first define helper functions
+
+
+def _needs_reroute_for_attr(a, b):
+    """Check if two frame attribute arrays differ, treating shape mismatches as different."""
+    try:
+        return np.any(a != b)
+    except ValueError:
+        return True
 
 
 def teme_to_itrs_mat(time):
@@ -105,14 +117,16 @@ def get_location_gcrs(location, obstime, ref_to_itrs, gcrs_to_ref):
 
     """
     obsgeoloc, obsgeovel = location._get_gcrs_posvel(obstime, ref_to_itrs, gcrs_to_ref)
-    return GCRS(obstime=obstime, obsgeoloc=obsgeoloc, obsgeovel=obsgeovel)
+    return GCRSFrame(obstime=obstime, obsgeoloc=obsgeoloc, obsgeovel=obsgeovel)
 
 
 # now the actual transforms
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, TETE)
-def gcrs_to_tete(gcrs_coo, tete_frame):
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, GCRSFrame, TETEFrame
+)
+def gcrs_to_tete(gcrs_frame, tete_frame):
     # Classical NPB matrix, IAU 2006/2000A
     # (same as in builtin_frames.utils.get_cip).
     rbpn = erfa.pnm06a(*get_jd12(tete_frame.obstime, "tt"))
@@ -123,59 +137,160 @@ def gcrs_to_tete(gcrs_coo, tete_frame):
         tete_to_itrs_mat(tete_frame.obstime, rbpn=rbpn),
         rbpn,
     )
-    gcrs_coo2 = gcrs_coo.transform_to(loc_gcrs)
-    # Now we are relative to the correct observer, do the transform to TETE.
-    # These rotations are defined at the geocenter, but can be applied to
-    # topocentric positions as well, assuming rigid Earth. See p57 of
-    # https://www.usno.navy.mil/USNO/astronomical-applications/publications/Circular_179.pdf
-    crepr = gcrs_coo2.cartesian.transform(rbpn)
-    return tete_frame.realize_frame(crepr)
+    needs_reroute = (
+        _needs_reroute_for_attr(gcrs_frame.obstime, loc_gcrs.obstime)
+        or _needs_reroute_for_attr(
+            gcrs_frame.obsgeoloc.xyz.value, loc_gcrs.obsgeoloc.xyz.value
+        )
+        or _needs_reroute_for_attr(
+            gcrs_frame.obsgeovel.xyz.value, loc_gcrs.obsgeovel.xyz.value
+        )
+    )
+
+    def converter(rep):
+        if needs_reroute:
+            rep = (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=gcrs_frame.obstime,
+                        obsgeoloc=gcrs_frame.obsgeoloc,
+                        obsgeovel=gcrs_frame.obsgeovel,
+                    ),
+                    rep,
+                )
+                .transform_to(loc_gcrs)
+                .data
+            )
+        # Now we are relative to the correct observer, do the transform to TETE.
+        # These rotations are defined at the geocenter, but can be applied to
+        # topocentric positions as well, assuming rigid Earth. See p57 of
+        # https://www.usno.navy.mil/USNO/astronomical-applications/publications/Circular_179.pdf
+        return rep.to_cartesian().transform(rbpn)
+
+    return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, TETE, GCRS)
-def tete_to_gcrs(tete_coo, gcrs_frame):
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, TETE)
+def gcrs_to_tete_legacy(gcrs_coo, tete_frame):
+    converter = gcrs_to_tete(gcrs_coo, tete_frame)
+    return tete_frame.realize_frame(converter(gcrs_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, TETEFrame, GCRSFrame
+)
+def tete_to_gcrs(tete_frame, gcrs_frame):
     # Compute the pn matrix, and then multiply by its transpose.
-    rbpn = erfa.pnm06a(*get_jd12(tete_coo.obstime, "tt"))
-    newrepr = tete_coo.cartesian.transform(matrix_transpose(rbpn))
-    # We now have a GCRS vector for the input location and obstime.
-    # Turn it into a GCRS frame instance.
+    rbpn = erfa.pnm06a(*get_jd12(tete_frame.obstime, "tt"))
+    # We will need the GCRS frame for the input location and obstime.
     loc_gcrs = get_location_gcrs(
-        tete_coo.location,
-        tete_coo.obstime,
-        tete_to_itrs_mat(tete_coo.obstime, rbpn=rbpn),
+        tete_frame.location,
+        tete_frame.obstime,
+        tete_to_itrs_mat(tete_frame.obstime, rbpn=rbpn),
         rbpn,
     )
-    gcrs = loc_gcrs.realize_frame(newrepr)
-    # Finally, do any needed offsets (no-op if same obstime and location)
-    return gcrs.transform_to(gcrs_frame)
-
-
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, TETE, ITRS)
-def tete_to_itrs(tete_coo, itrs_frame):
-    # first get us to TETE at the target obstime, and location (no-op if same)
-    tete_coo2 = tete_coo.transform_to(
-        TETE(obstime=itrs_frame.obstime, location=itrs_frame.location)
+    needs_reroute = (
+        _needs_reroute_for_attr(loc_gcrs.obstime, gcrs_frame.obstime)
+        or _needs_reroute_for_attr(
+            loc_gcrs.obsgeoloc.xyz.value, gcrs_frame.obsgeoloc.xyz.value
+        )
+        or _needs_reroute_for_attr(
+            loc_gcrs.obsgeovel.xyz.value, gcrs_frame.obsgeovel.xyz.value
+        )
     )
 
+    def converter(rep):
+        newrepr = rep.to_cartesian().transform(matrix_transpose(rbpn))
+        # We now have a GCRS vector for the input location and obstime.
+        if needs_reroute:
+            # Move to the target GCRS (no-op if same obstime and location)
+            return Coordinate(loc_gcrs, newrepr).transform_to(gcrs_frame).data
+        return newrepr
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, TETE, GCRS)
+def tete_to_gcrs_legacy(tete_coo, gcrs_frame):
+    converter = tete_to_gcrs(tete_coo, gcrs_frame)
+    return gcrs_frame.realize_frame(converter(tete_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, TETEFrame, ITRSFrame
+)
+def tete_to_itrs(tete_frame, itrs_frame):
     # now get the pmatrix
     pmat = tete_to_itrs_mat(itrs_frame.obstime)
-    crepr = tete_coo2.cartesian.transform(pmat)
-    return itrs_frame.realize_frame(crepr)
+    needs_reroute = np.any(tete_frame.obstime != itrs_frame.obstime) or np.any(
+        tete_frame.location != itrs_frame.location
+    )
+
+    def converter(rep):
+        if needs_reroute:
+            # first get us to TETE at the target obstime, and location (no-op if same)
+            rep = (
+                Coordinate(
+                    TETEFrame(obstime=tete_frame.obstime, location=tete_frame.location),
+                    rep,
+                )
+                .transform_to(
+                    TETEFrame(obstime=itrs_frame.obstime, location=itrs_frame.location)
+                )
+                .data
+            )
+        return rep.to_cartesian().transform(pmat)
+
+    return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, TETE)
-def itrs_to_tete(itrs_coo, tete_frame):
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, TETE, ITRS)
+def tete_to_itrs_legacy(tete_coo, itrs_frame):
+    converter = tete_to_itrs(tete_coo, itrs_frame)
+    return itrs_frame.realize_frame(converter(tete_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, TETEFrame
+)
+def itrs_to_tete(itrs_frame, tete_frame):
     # compute the pmatrix, and then multiply by its transpose
-    pmat = tete_to_itrs_mat(itrs_coo.obstime)
-    newrepr = itrs_coo.cartesian.transform(matrix_transpose(pmat))
-    tete = TETE(newrepr, obstime=itrs_coo.obstime, location=itrs_coo.location)
+    pmat = tete_to_itrs_mat(itrs_frame.obstime)
+    needs_reroute = np.any(itrs_frame.obstime != tete_frame.obstime) or np.any(
+        itrs_frame.location != tete_frame.location
+    )
 
-    # now do any needed offsets (no-op if same obstime and location)
-    return tete.transform_to(tete_frame)
+    def converter(rep):
+        newrepr = rep.to_cartesian().transform(matrix_transpose(pmat))
+        if needs_reroute:
+            # now do any needed offsets (no-op if same obstime and location)
+            return (
+                Coordinate(
+                    TETEFrame(obstime=itrs_frame.obstime, location=itrs_frame.location),
+                    newrepr,
+                )
+                .transform_to(tete_frame)
+                .data
+            )
+        return newrepr
+
+    return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, CIRS)
-def gcrs_to_cirs(gcrs_coo, cirs_frame):
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, TETE)
+def itrs_to_tete_legacy(itrs_coo, tete_frame):
+    converter = itrs_to_tete(itrs_coo, tete_frame)
+    return tete_frame.realize_frame(converter(itrs_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, GCRSFrame, CIRSFrame
+)
+def gcrs_to_cirs(gcrs_frame, cirs_frame):
     # first get the pmatrix
     pmat = gcrs_to_cirs_mat(cirs_frame.obstime)
     # Get GCRS coordinates for the target observer location and time.
@@ -185,49 +300,151 @@ def gcrs_to_cirs(gcrs_coo, cirs_frame):
         cirs_to_itrs_mat(cirs_frame.obstime),
         pmat,
     )
-    gcrs_coo2 = gcrs_coo.transform_to(loc_gcrs)
-    # Now we are relative to the correct observer, do the transform to CIRS.
-    crepr = gcrs_coo2.cartesian.transform(pmat)
-    return cirs_frame.realize_frame(crepr)
+    needs_reroute = (
+        _needs_reroute_for_attr(gcrs_frame.obstime, loc_gcrs.obstime)
+        or _needs_reroute_for_attr(
+            gcrs_frame.obsgeoloc.xyz.value, loc_gcrs.obsgeoloc.xyz.value
+        )
+        or _needs_reroute_for_attr(
+            gcrs_frame.obsgeovel.xyz.value, loc_gcrs.obsgeovel.xyz.value
+        )
+    )
+
+    def converter(rep):
+        if needs_reroute:
+            rep = (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=gcrs_frame.obstime,
+                        obsgeoloc=gcrs_frame.obsgeoloc,
+                        obsgeovel=gcrs_frame.obsgeovel,
+                    ),
+                    rep,
+                )
+                .transform_to(loc_gcrs)
+                .data
+            )
+        # Now we are relative to the correct observer, do the transform to CIRS.
+        return rep.to_cartesian().transform(pmat)
+
+    return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, GCRS)
-def cirs_to_gcrs(cirs_coo, gcrs_frame):
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, GCRS, CIRS)
+def gcrs_to_cirs_legacy(gcrs_coo, cirs_frame):
+    converter = gcrs_to_cirs(gcrs_coo, cirs_frame)
+    return cirs_frame.realize_frame(converter(gcrs_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, CIRSFrame, GCRSFrame
+)
+def cirs_to_gcrs(cirs_frame, gcrs_frame):
     # Compute the pmatrix, and then multiply by its transpose,
-    pmat = gcrs_to_cirs_mat(cirs_coo.obstime)
-    newrepr = cirs_coo.cartesian.transform(matrix_transpose(pmat))
-    # We now have a GCRS vector for the input location and obstime.
-    # Turn it into a GCRS frame instance.
+    pmat = gcrs_to_cirs_mat(cirs_frame.obstime)
+    # We will need the GCRS frame for the input location and obstime.
     loc_gcrs = get_location_gcrs(
-        cirs_coo.location, cirs_coo.obstime, cirs_to_itrs_mat(cirs_coo.obstime), pmat
+        cirs_frame.location,
+        cirs_frame.obstime,
+        cirs_to_itrs_mat(cirs_frame.obstime),
+        pmat,
     )
-    gcrs = loc_gcrs.realize_frame(newrepr)
-    # Finally, do any needed offsets (no-op if same obstime and location)
-    return gcrs.transform_to(gcrs_frame)
-
-
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, ITRS)
-def cirs_to_itrs(cirs_coo, itrs_frame):
-    # first get us to CIRS at the target obstime, and location (no-op if same)
-    cirs_coo2 = cirs_coo.transform_to(
-        CIRS(obstime=itrs_frame.obstime, location=itrs_frame.location)
+    needs_reroute = (
+        _needs_reroute_for_attr(loc_gcrs.obstime, gcrs_frame.obstime)
+        or _needs_reroute_for_attr(
+            loc_gcrs.obsgeoloc.xyz.value, gcrs_frame.obsgeoloc.xyz.value
+        )
+        or _needs_reroute_for_attr(
+            loc_gcrs.obsgeovel.xyz.value, gcrs_frame.obsgeovel.xyz.value
+        )
     )
 
+    def converter(rep):
+        newrepr = rep.to_cartesian().transform(matrix_transpose(pmat))
+        # We now have a GCRS vector for the input location and obstime.
+        if needs_reroute:
+            # Move to the target GCRS (no-op if same obstime and location)
+            return Coordinate(loc_gcrs, newrepr).transform_to(gcrs_frame).data
+        return newrepr
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, GCRS)
+def cirs_to_gcrs_legacy(cirs_coo, gcrs_frame):
+    converter = cirs_to_gcrs(cirs_coo, gcrs_frame)
+    return gcrs_frame.realize_frame(converter(cirs_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, CIRSFrame, ITRSFrame
+)
+def cirs_to_itrs(cirs_frame, itrs_frame):
     # now get the pmatrix
     pmat = cirs_to_itrs_mat(itrs_frame.obstime)
-    crepr = cirs_coo2.cartesian.transform(pmat)
-    return itrs_frame.realize_frame(crepr)
+    needs_reroute = np.any(cirs_frame.obstime != itrs_frame.obstime) or np.any(
+        cirs_frame.location != itrs_frame.location
+    )
+
+    def converter(rep):
+        if needs_reroute:
+            # first get us to CIRS at the target obstime, and location (no-op if same)
+            rep = (
+                Coordinate(
+                    CIRSFrame(obstime=cirs_frame.obstime, location=cirs_frame.location),
+                    rep,
+                )
+                .transform_to(
+                    CIRSFrame(obstime=itrs_frame.obstime, location=itrs_frame.location)
+                )
+                .data
+            )
+        return rep.to_cartesian().transform(pmat)
+
+    return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, CIRS)
-def itrs_to_cirs(itrs_coo, cirs_frame):
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, CIRS, ITRS)
+def cirs_to_itrs_legacy(cirs_coo, itrs_frame):
+    converter = cirs_to_itrs(cirs_coo, itrs_frame)
+    return itrs_frame.realize_frame(converter(cirs_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, CIRSFrame
+)
+def itrs_to_cirs(itrs_frame, cirs_frame):
     # compute the pmatrix, and then multiply by its transpose
-    pmat = cirs_to_itrs_mat(itrs_coo.obstime)
-    newrepr = itrs_coo.cartesian.transform(matrix_transpose(pmat))
-    cirs = CIRS(newrepr, obstime=itrs_coo.obstime, location=itrs_coo.location)
+    pmat = cirs_to_itrs_mat(itrs_frame.obstime)
+    needs_reroute = np.any(itrs_frame.obstime != cirs_frame.obstime) or np.any(
+        itrs_frame.location != cirs_frame.location
+    )
 
-    # now do any needed offsets (no-op if same obstime and location)
-    return cirs.transform_to(cirs_frame)
+    def converter(rep):
+        newrepr = rep.to_cartesian().transform(matrix_transpose(pmat))
+        if needs_reroute:
+            # now do any needed offsets (no-op if same obstime and location)
+            return (
+                Coordinate(
+                    CIRSFrame(obstime=itrs_frame.obstime, location=itrs_frame.location),
+                    newrepr,
+                )
+                .transform_to(cirs_frame)
+                .data
+            )
+        return newrepr
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, CIRS)
+def itrs_to_cirs_legacy(itrs_coo, cirs_frame):
+    converter = itrs_to_cirs(itrs_coo, cirs_frame)
+    return cirs_frame.realize_frame(converter(itrs_coo.data))
 
 
 # TODO: implement GCRS<->CIRS if there's call for it.  The thing that's awkward
@@ -237,62 +454,161 @@ def itrs_to_cirs(itrs_coo, cirs_frame):
 
 
 @frame_transform_graph.transform(
-    FunctionTransformWithFiniteDifference, GCRS, PrecessedGeocentric
+    RepresentationFunctionTransformWithFiniteDifference,
+    GCRSFrame,
+    PrecessedGeocentricFrame,
 )
-def gcrs_to_precessedgeo(from_coo, to_frame):
-    # first get us to GCRS with the right attributes (might be a no-op)
-    gcrs_coo = from_coo.transform_to(
-        GCRS(
-            obstime=to_frame.obstime,
-            obsgeoloc=to_frame.obsgeoloc,
-            obsgeovel=to_frame.obsgeovel,
+def gcrs_to_precessedgeo(gcrs_frame, precessedgeo_frame):
+    # now precess to the requested equinox
+    pmat = gcrs_precession_mat(precessedgeo_frame.equinox)
+    needs_reroute = (
+        _needs_reroute_for_attr(gcrs_frame.obstime, precessedgeo_frame.obstime)
+        or _needs_reroute_for_attr(
+            gcrs_frame.obsgeoloc.xyz.value, precessedgeo_frame.obsgeoloc.xyz.value
+        )
+        or _needs_reroute_for_attr(
+            gcrs_frame.obsgeovel.xyz.value, precessedgeo_frame.obsgeovel.xyz.value
         )
     )
 
-    # now precess to the requested equinox
-    pmat = gcrs_precession_mat(to_frame.equinox)
-    crepr = gcrs_coo.cartesian.transform(pmat)
-    return to_frame.realize_frame(crepr)
+    def converter(rep):
+        if needs_reroute:
+            # first get us to GCRS with the right attributes
+            rep = (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=gcrs_frame.obstime,
+                        obsgeoloc=gcrs_frame.obsgeoloc,
+                        obsgeovel=gcrs_frame.obsgeovel,
+                    ),
+                    rep,
+                )
+                .transform_to(
+                    GCRSFrame(
+                        obstime=precessedgeo_frame.obstime,
+                        obsgeoloc=precessedgeo_frame.obsgeoloc,
+                        obsgeovel=precessedgeo_frame.obsgeovel,
+                    )
+                )
+                .data
+            )
+        return rep.to_cartesian().transform(pmat)
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(
+    FunctionTransformWithFiniteDifference, GCRS, PrecessedGeocentric
+)
+def gcrs_to_precessedgeo_legacy(gcrs_coo, precessedgeo_frame):
+    converter = gcrs_to_precessedgeo(gcrs_coo, precessedgeo_frame)
+    return precessedgeo_frame.realize_frame(converter(gcrs_coo.data))
 
 
 @frame_transform_graph.transform(
-    FunctionTransformWithFiniteDifference, PrecessedGeocentric, GCRS
+    RepresentationFunctionTransformWithFiniteDifference,
+    PrecessedGeocentricFrame,
+    GCRSFrame,
 )
-def precessedgeo_to_gcrs(from_coo, to_frame):
+def precessedgeo_to_gcrs(precessedgeo_frame, gcrs_frame):
     # first un-precess
-    pmat = gcrs_precession_mat(from_coo.equinox)
-    crepr = from_coo.cartesian.transform(matrix_transpose(pmat))
-    gcrs_coo = GCRS(
-        crepr,
-        obstime=from_coo.obstime,
-        obsgeoloc=from_coo.obsgeoloc,
-        obsgeovel=from_coo.obsgeovel,
+    pmat = gcrs_precession_mat(precessedgeo_frame.equinox)
+    needs_reroute = (
+        _needs_reroute_for_attr(precessedgeo_frame.obstime, gcrs_frame.obstime)
+        or _needs_reroute_for_attr(
+            precessedgeo_frame.obsgeoloc.xyz.value, gcrs_frame.obsgeoloc.xyz.value
+        )
+        or _needs_reroute_for_attr(
+            precessedgeo_frame.obsgeovel.xyz.value, gcrs_frame.obsgeovel.xyz.value
+        )
     )
 
-    # then move to the GCRS that's actually desired
-    return gcrs_coo.transform_to(to_frame)
+    def converter(rep):
+        crepr = rep.to_cartesian().transform(matrix_transpose(pmat))
+        if needs_reroute:
+            # then move to the GCRS that's actually desired
+            return (
+                Coordinate(
+                    GCRSFrame(
+                        obstime=precessedgeo_frame.obstime,
+                        obsgeoloc=precessedgeo_frame.obsgeoloc,
+                        obsgeovel=precessedgeo_frame.obsgeovel,
+                    ),
+                    crepr,
+                )
+                .transform_to(gcrs_frame)
+                .data
+            )
+        return crepr
+
+    return converter
 
 
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, TEME, ITRS)
-def teme_to_itrs(teme_coo, itrs_frame):
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(
+    FunctionTransformWithFiniteDifference, PrecessedGeocentric, GCRS
+)
+def precessedgeo_to_gcrs_legacy(precessedgeo_coo, gcrs_frame):
+    converter = precessedgeo_to_gcrs(precessedgeo_coo, gcrs_frame)
+    return gcrs_frame.realize_frame(converter(precessedgeo_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, TEMEFrame, ITRSFrame
+)
+def teme_to_itrs(teme_frame, itrs_frame):
     # use the pmatrix to transform to ITRS in the source obstime
-    pmat = teme_to_itrs_mat(teme_coo.obstime)
-    crepr = teme_coo.cartesian.transform(pmat)
-    itrs = ITRS(crepr, obstime=teme_coo.obstime)
-
-    # transform the ITRS coordinate to the target obstime
-    return itrs.transform_to(itrs_frame)
-
-
-@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, TEME)
-def itrs_to_teme(itrs_coo, teme_frame):
-    # transform the ITRS coordinate to the target obstime
-    itrs_coo2 = itrs_coo.transform_to(ITRS(obstime=teme_frame.obstime))
-
-    # compute the pmatrix, and then multiply by its transpose
     pmat = teme_to_itrs_mat(teme_frame.obstime)
-    newrepr = itrs_coo2.cartesian.transform(matrix_transpose(pmat))
-    return teme_frame.realize_frame(newrepr)
+    needs_reroute = np.any(teme_frame.obstime != itrs_frame.obstime)
+
+    def converter(rep):
+        crepr = rep.to_cartesian().transform(pmat)
+        if needs_reroute:
+            # transform the ITRS coordinate to the target obstime
+            return (
+                Coordinate(ITRSFrame(obstime=teme_frame.obstime), crepr)
+                .transform_to(itrs_frame)
+                .data
+            )
+        return crepr
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, TEME, ITRS)
+def teme_to_itrs_legacy(teme_coo, itrs_frame):
+    converter = teme_to_itrs(teme_coo, itrs_frame)
+    return itrs_frame.realize_frame(converter(teme_coo.data))
+
+
+@frame_transform_graph.transform(
+    RepresentationFunctionTransformWithFiniteDifference, ITRSFrame, TEMEFrame
+)
+def itrs_to_teme(itrs_frame, teme_frame):
+    pmat = teme_to_itrs_mat(teme_frame.obstime)
+    needs_reroute = np.any(itrs_frame.obstime != teme_frame.obstime)
+
+    def converter(rep):
+        if needs_reroute:
+            # transform the ITRS coordinate to the target obstime
+            rep = (
+                Coordinate(ITRSFrame(obstime=itrs_frame.obstime), rep)
+                .transform_to(ITRSFrame(obstime=teme_frame.obstime))
+                .data
+            )
+        # compute the pmatrix, and then multiply by its transpose
+        return rep.to_cartesian().transform(matrix_transpose(pmat))
+
+    return converter
+
+
+# TODO: APE23: remove when legacy frames are deprecated
+@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, TEME)
+def itrs_to_teme_legacy(itrs_coo, teme_frame):
+    converter = itrs_to_teme(itrs_coo, teme_frame)
+    return teme_frame.realize_frame(converter(itrs_coo.data))
 
 
 # Create loopback transformations
@@ -302,3 +618,9 @@ frame_transform_graph._add_merged_transform(
 )
 frame_transform_graph._add_merged_transform(TEME, ITRS, TEME)
 frame_transform_graph._add_merged_transform(TETE, ICRS, TETE)
+frame_transform_graph._add_merged_transform(ITRSFrame, CIRSFrame, ITRSFrame)
+frame_transform_graph._add_merged_transform(
+    PrecessedGeocentricFrame, GCRSFrame, PrecessedGeocentricFrame
+)
+frame_transform_graph._add_merged_transform(TEMEFrame, ITRSFrame, TEMEFrame)
+frame_transform_graph._add_merged_transform(TETEFrame, ICRSFrame, TETEFrame)

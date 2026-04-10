@@ -1,13 +1,13 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
 from astropy.coordinates.attributes import EarthLocationAttribute, TimeAttribute
-from astropy.coordinates.baseframe import base_doc
+from astropy.coordinates.baseframe import BaseCoordinateFrame, base_doc, base_doc_frame
 from astropy.utils.decorators import format_doc
 
 from .baseradec import BaseRADecFrame, doc_components
 from .utils import DEFAULT_OBSTIME, EARTH_CENTER
 
-__all__ = ["CIRS"]
+__all__ = ["CIRS", "CIRSFrame"]
 
 
 doc_footer = """
@@ -24,13 +24,21 @@ doc_footer = """
 """
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer)
-class CIRS(BaseRADecFrame):
+@format_doc(base_doc_frame, footer=doc_footer)
+class CIRSFrame(BaseRADecFrame):
     """
     A coordinate or frame in the Celestial Intermediate Reference System (CIRS).
 
     The frame attributes are listed under **Other Parameters**.
+
+    NOTE:
+    This class only holds metadata defining the CIRS reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `CIRS` class.
     """
+
+    name = "cirs"
 
     obstime = TimeAttribute(
         default=DEFAULT_OBSTIME, doc="The reference time (e.g., time of observation"
@@ -38,6 +46,16 @@ class CIRS(BaseRADecFrame):
     location = EarthLocationAttribute(
         default=EARTH_CENTER, doc="The location on Earth of the observer"
     )
+
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer)
+class CIRS(BaseCoordinateFrame, CIRSFrame):
+    """
+    A coordinate or frame in the Celestial Intermediate Reference System (CIRS).
+
+    The frame attributes are listed under **Other Parameters**.
+    """
+    pass
 
 
 # The "self-transform" is defined in icrs_cirs_transformations.py, because in

@@ -25,6 +25,21 @@ __all__ = [
 ]
 
 
+def _coord_with_data(coord, data):
+    """Return a coordinate equivalent to *coord* but with *data* as its representation."""
+    # TODO: APE23: simplify to only the Coordinate branch when BaseCoordinateFrame is deprecated
+    if hasattr(coord, "realize_frame"):
+        return coord.realize_frame(data)
+    from astropy.coordinates.coordinate import Coordinate
+
+    return Coordinate(frame=coord.frame, data=data)
+
+
+def _coord_cache(coord):
+    """Return the cache dict for *coord*, or ``None`` if it has no cache."""
+    return getattr(coord, "cache", None)
+
+
 class CoordinateMatchResult(NamedTuple):
     """Results of matching a set of sources to a catalog.
 
@@ -185,15 +200,17 @@ def match_coordinates_sky(
 
     # strip out distance info
     match_urepr = newmatch.data.represent_as(UnitSphericalRepresentation)
-    newmatch_u = newmatch.realize_frame(match_urepr)
+    newmatch_u = _coord_with_data(newmatch, match_urepr)
 
     cat_urepr = catalogcoord.data.represent_as(UnitSphericalRepresentation)
-    newcat_u = catalogcoord.realize_frame(cat_urepr)
+    newcat_u = _coord_with_data(catalogcoord, cat_urepr)
 
     # Check for a stored KD-tree on the passed-in coordinate. Normally it will
     # have a distinct name from the "3D" one, so it's safe to use even though
     # it's based on UnitSphericalRepresentation.
-    storekdtree = catalogcoord.cache.get(storekdtree, storekdtree)
+    cat_cache = _coord_cache(catalogcoord)
+    if cat_cache is not None:
+        storekdtree = cat_cache.get(storekdtree, storekdtree)
 
     idx, sep2d, sep3d = match_coordinates_3d(
         newmatch_u, newcat_u, nthneighbor, storekdtree
@@ -207,11 +224,13 @@ def match_coordinates_sky(
         sep3d = catalogcoord[idx].separation_3d(newmatch)
 
     # update the kdtree on the actual passed-in coordinate
-    if isinstance(storekdtree, str):
-        catalogcoord.cache[storekdtree] = newcat_u.cache[storekdtree]
-    elif storekdtree is True:
-        # the old backwards-compatible name
-        catalogcoord.cache["kdtree"] = newcat_u.cache["kdtree"]
+    if cat_cache is not None:
+        newcat_u_cache = _coord_cache(newcat_u)
+        if isinstance(storekdtree, str) and newcat_u_cache is not None:
+            cat_cache[storekdtree] = newcat_u_cache[storekdtree]
+        elif storekdtree is True and newcat_u_cache is not None:
+            # the old backwards-compatible name
+            cat_cache["kdtree"] = newcat_u_cache["kdtree"]
 
     return CoordinateMatchResult(idx, sep2d, sep3d)
 
@@ -384,17 +403,18 @@ def search_around_sky(coords1, coords2, seplimit, storekdtree="kdtree_sky"):
     # strip out distance info
     urepr1 = coords1.data.represent_as(UnitSphericalRepresentation)
 
-    kdt1 = _get_cartesian_kdtree(coords1.realize_frame(urepr1), storekdtree)
-    if storekdtree and coords2.cache.get(storekdtree):
+    kdt1 = _get_cartesian_kdtree(_coord_with_data(coords1, urepr1), storekdtree)
+    coords2_cache = _coord_cache(coords2)
+    if storekdtree and coords2_cache is not None and coords2_cache.get(storekdtree):
         # just use the stored KD-Tree
-        kdt2 = coords2.cache[storekdtree]
+        kdt2 = coords2_cache[storekdtree]
     else:
         # strip out distance info
         urepr2 = coords2.data.represent_as(UnitSphericalRepresentation)
 
-        kdt2 = _get_cartesian_kdtree(coords2.realize_frame(urepr2), storekdtree)
-        if storekdtree:
-            coords2.cache["kdtree" if storekdtree is True else storekdtree] = kdt2
+        kdt2 = _get_cartesian_kdtree(_coord_with_data(coords2, urepr2), storekdtree)
+        if storekdtree and coords2_cache is not None:
+            coords2_cache["kdtree" if storekdtree is True else storekdtree] = kdt2
 
     idxs1 = []
     idxs2 = []
@@ -455,8 +475,11 @@ def _get_cartesian_kdtree(coord, attrname_or_kdt="kdtree", forceunit=None):
         attrname_or_kdt = "kdtree"
 
     # figure out where any cached KDTree might be
+    coord_cache = _coord_cache(coord)
     if isinstance(attrname_or_kdt, str):
-        kdt = coord.cache.get(attrname_or_kdt, None)
+        kdt = (
+            coord_cache.get(attrname_or_kdt, None) if coord_cache is not None else None
+        )
         if kdt is not None and not isinstance(kdt, KDTree):
             raise TypeError(
                 f'The `attrname_or_kdt` "{attrname_or_kdt}" is not a scipy KD tree!'
@@ -485,8 +508,8 @@ def _get_cartesian_kdtree(coord, attrname_or_kdt="kdtree", forceunit=None):
         # we stay backwards-compatible with previous versions of `astropy` for now.
         kdt = KDTree(flatxyz.value.T, compact_nodes=False, balanced_tree=False)
 
-    if attrname_or_kdt:
+    if attrname_or_kdt and coord_cache is not None:
         # cache the kdtree in `coord`
-        coord.cache[attrname_or_kdt] = kdt
+        coord_cache[attrname_or_kdt] = kdt
 
     return kdt

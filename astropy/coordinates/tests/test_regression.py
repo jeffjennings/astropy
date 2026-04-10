@@ -211,10 +211,15 @@ def test_regression_4210():
 
     # and for good measure, check the other ecliptic systems are all the same
     # names for their attributes
+    # TODO: APE23: update when BaseCoordinateFrame is deprecated
+    from astropy.coordinates.baseframe import BaseCoordinateFrame
     from astropy.coordinates.builtin_frames import ecliptic
 
     for frame_name in ecliptic.__all__:
         eclcls = getattr(ecliptic, frame_name)
+        # NOTE: APE23: skip data-less *Frame classes since they don't hold data
+        if not (isinstance(eclcls, type) and issubclass(eclcls, BaseCoordinateFrame)):
+            continue
         eclobj = eclcls(1 * u.deg, 2 * u.deg, 3 * u.AU)
 
         eclobj.lat

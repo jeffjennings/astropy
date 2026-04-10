@@ -11,13 +11,15 @@ from astropy.coordinates.attributes import (
 )
 from astropy.coordinates.baseframe import (
     BaseCoordinateFrame,
+    BaseFrame,
     RepresentationMapping,
     base_doc,
+    base_doc_frame,
 )
+from astropy.coordinates.coordinate import BaseCoordinate
 from astropy.utils.decorators import format_doc
 
-__all__ = ["AltAz"]
-
+__all__ = ["AltAz", "AltAzFrame"]
 
 _90DEG = 90 * u.deg
 
@@ -78,8 +80,8 @@ doc_footer = """
     """
 
 
-@format_doc(base_doc, components=doc_components, footer=doc_footer)
-class AltAz(BaseCoordinateFrame):
+@format_doc(base_doc_frame, footer=doc_footer)
+class AltAzFrame(BaseFrame):
     """
     A coordinate or frame in the Altitude-Azimuth system (Horizontal
     coordinates) with respect to the WGS84 ellipsoid.  Azimuth is oriented
@@ -91,7 +93,15 @@ class AltAz(BaseCoordinateFrame):
 
     The frame attributes are listed under **Other Parameters**, which are
     necessary for transforming from AltAz to some other system.
+
+    NOTE:
+    This class only holds metadata defining the AltAz reference frame.
+    It does not store coordinate data. To store coordinate data in this frame,
+    use `~astropy.coordinates.Coordinate`, `~astropy.coordinates.SkyCoord` or the
+    legacy `AltAz` class.
     """
+
+    name = "altaz"
 
     frame_specific_representation_info = {
         r.SphericalRepresentation: [
@@ -125,6 +135,23 @@ class AltAz(BaseCoordinateFrame):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+
+
+@format_doc(base_doc, components=doc_components, footer=doc_footer)
+class AltAz(BaseCoordinateFrame, AltAzFrame):
+    """
+    A coordinate or frame in the Altitude-Azimuth system (Horizontal
+    coordinates) with respect to the WGS84 ellipsoid.  Azimuth is oriented
+    East of North (i.e., N=0, E=90 degrees).  Altitude is also known as
+    elevation angle, so this frame is also in the Azimuth-Elevation system.
+
+    This frame is assumed to *include* refraction effects if the ``pressure``
+    frame attribute is non-zero.
+
+    The frame attributes are listed under **Other Parameters**, which are
+    necessary for transforming from AltAz to some other system.
+    """
+
     @property
     def secz(self):
         """
@@ -139,6 +166,18 @@ class AltAz(BaseCoordinateFrame):
         The zenith angle (or zenith distance / co-altitude) for this coordinate.
         """
         return _90DEG.to(self.alt.unit) - self.alt
+
+
+@BaseCoordinate.register_property("altaz")
+def secz(coord):
+    """Secant of the zenith angle, a common estimate of the airmass."""
+    return 1 / np.sin(coord.alt)
+
+
+@BaseCoordinate.register_property("altaz")
+def zen(coord):
+    """The zenith angle (or zenith distance / co-altitude)."""
+    return _90DEG.to(coord.alt.unit) - coord.alt
 
 
 # self-transform defined in icrs_observed_transforms.py
