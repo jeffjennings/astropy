@@ -480,7 +480,8 @@ def test_attr_inheritance():
     assert allclose(sc2.dec, sc.dec)
     assert allclose(sc2.distance, sc.distance)
 
-    sc2 = SkyCoord(sc.frame)  # sc.frame has equinox, obstime
+    # NOTE: APE23: sc.frame is now data-less
+    sc2 = SkyCoord(sc.data, frame=sc.frame)  # sc.frame has equinox, obstime
     assert sc2.equinox == sc.equinox
     assert sc2.obstime == sc.obstime
     assert allclose(sc2.ra, sc.ra)
@@ -588,11 +589,10 @@ def test_setitem_exceptions():
     ):
         sc1[0] = sc2[0]
 
+    # NOTE: APE23: sc.frame is now data-less
     sc1 = SkyCoord(sc0.ra, sc0.dec, frame="fk4", obstime="B2001")
-    with pytest.raises(
-        ValueError, match="can only set frame item from an equivalent frame"
-    ):
-        sc1.frame[0] = sc2.frame[0]
+    with pytest.raises(ValueError, match="cannot set: frames are not equivalent"):
+        sc1[0] = sc2[0]
 
     sc1 = SkyCoord(sc0.ra[0], sc0.dec[0], frame="fk4", obstime=obstime)
     with pytest.raises(
@@ -688,7 +688,8 @@ def test_attr_conflicts():
     SkyCoord(sc, equinox="J1999", obstime="J2001")
 
     # OK because sc.frame doesn't have obstime
-    SkyCoord(sc.frame, equinox="J1999", obstime="J2100")
+    # NOTE: APE23: sc.frame is now data-less
+    SkyCoord(sc.data, frame=sc.frame, equinox="J1999", obstime="J2100")
 
     # Not OK if attrs don't match
     with pytest.raises(ValueError) as err:
@@ -707,8 +708,9 @@ def test_attr_conflicts():
     assert "Frame attribute 'obstime' has conflicting" in str(err.value)
 
     # Not OK because sc.frame has different attrs
+    # NOTE: APE23: sc.frame is now data-less
     with pytest.raises(ValueError) as err:
-        SkyCoord(sc.frame, equinox="J1999", obstime="J2002")
+        SkyCoord(sc.data, frame=sc.frame, equinox="J1999", obstime="J2002")
     assert "Frame attribute 'obstime' has conflicting" in str(err.value)
 
 
@@ -1632,7 +1634,8 @@ def test_equiv_skycoord_with_extra_attrs():
     # Create a SkyCoord where obsgeoloc tags along as an extra attribute
     sc1 = SkyCoord(gcrs).transform_to(ICRS)
     # Now create a SkyCoord with an equivalent frame but without the extra attribute
-    sc2 = SkyCoord(sc1.frame)
+    # NOTE: APE23: sc.frame is now data-less
+    sc2 = SkyCoord(sc1.data, frame=sc1.frame)
     # The SkyCoords are therefore not equivalent, but check both directions
     assert not sc1.is_equivalent_frame(sc2)
     # This way around raised a TypeError which is fixed by #10658
@@ -1777,10 +1780,12 @@ def test_cache_clear_sc():
 
     i = SkyCoord(1 * u.deg, 2 * u.deg)
 
-    # Add an in frame units version of the rep to the cache.
-    repr(i)
+    # NOTE: APE23: caching in SkyCoord has changed, as the representation cache is no
+    # longer tied to framees holding both data and attributes.
+    # access a component attribute to populate the cache
+    _ = i.ra
 
-    assert len(i.cache["representation"]) == 2
+    assert len(i.cache["representation"]) >= 1
 
     i.cache.clear()
 
