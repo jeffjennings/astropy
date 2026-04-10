@@ -14,10 +14,13 @@ from typing import Literal
 import numpy as np
 
 from astropy import units as u
+from astropy.table import QTable
 from astropy.utils import ShapedLikeNDArray
 from astropy.utils.masked import MaskableShapedLikeNDArray, combine_masks
-from .representation import SphericalRepresentation
+
 from .angles import Angle
+from .representation import SphericalRepresentation
+
 
 class BaseCoordinate(ABC):
     """
@@ -28,6 +31,7 @@ class BaseCoordinate(ABC):
     as ``.frame`` and a `~astropy.coordinates.BaseRepresentation` instance as
     ``.data``, and must implement `transform_to` and `__replace__`.
     """
+
     _frame_properties = {}
 
     @staticmethod
@@ -57,18 +61,20 @@ class BaseCoordinate(ABC):
         ... def my_property(coord):
         ...     return coord.data
         """
+
         def decorator(func):
-            BaseCoordinate._frame_properties.setdefault(
-                frame_name, {}
-            )[func.__name__] = func
+            BaseCoordinate._frame_properties.setdefault(frame_name, {})[
+                func.__name__
+            ] = func
             return func
+
         return decorator
 
     @property
     def frame_attributes(self):
         """Frame attributes for the coordinate frame."""
         return type(self.frame).frame_attributes
-    
+
     @property
     @abstractmethod
     def frame(self):
@@ -191,15 +197,15 @@ class BaseCoordinate(ABC):
             A new representation object of this coordinate's `data`.
         """
         from astropy.coordinates.baseframe import (
-            BaseCoordinateFrame as _BCF,
+            BaseCoordinateFrame,
             _get_repr_classes,
         )
 
         # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         frame = self.frame
         if (
-            isinstance(frame, _BCF)
-            and type(frame).represent_as is not _BCF.represent_as
+            isinstance(frame, BaseCoordinateFrame)
+            and type(frame).represent_as is not BaseCoordinateFrame.represent_as
         ):
             realized = frame.realize_frame(self.data)
             return realized.represent_as(base, s=s, in_frame_units=in_frame_units)
@@ -245,6 +251,7 @@ class BaseCoordinate(ABC):
         # Apply frame units to the differential part
         if diff_cls:
             from astropy.coordinates import representation as r
+
             orig_diff = self.data.differentials["s"]
             if diff_info := repr_info.get(diff_cls):
                 diffkwargs = {comp: getattr(diff, comp) for comp in diff.components}
@@ -278,7 +285,7 @@ class BaseCoordinate(ABC):
         A Cartesian representation of the coordinates in this object.
         """
         # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this        
+        #       the representation aliases should not be hard-coded like this
         return self.represent_as("cartesian", in_frame_units=True)
 
     @property
@@ -287,7 +294,7 @@ class BaseCoordinate(ABC):
         A cylindrical representation of the coordinates in this object.
         """
         # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this        
+        #       the representation aliases should not be hard-coded like this
         return self.represent_as("cylindrical", in_frame_units=True)
 
     @property
@@ -296,7 +303,7 @@ class BaseCoordinate(ABC):
         A spherical representation of the coordinates in this object.
         """
         # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this        
+        #       the representation aliases should not be hard-coded like this
         return self.represent_as("spherical", in_frame_units=True)
 
     @property
@@ -307,7 +314,7 @@ class BaseCoordinate(ABC):
         data in this object.
         """
         # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this        
+        #       the representation aliases should not be hard-coded like this
         return self.represent_as("spherical", "sphericalcoslat", in_frame_units=True)
 
     @property
@@ -338,7 +345,7 @@ class BaseCoordinate(ABC):
             raise ValueError(
                 "Coordinate has no associated velocity (Differential) data information."
             )
-        
+
         sph = self.represent_as("spherical", "sphericalcoslat", in_frame_units=True)
         pm_lon = sph.differentials["s"].d_lon_coslat
         pm_lat = sph.differentials["s"].d_lat
@@ -361,7 +368,7 @@ class BaseCoordinate(ABC):
 
     def is_transformable_to(self, new_frame):
         """
-        Determines if this coordinate frame can be transformed to another frame.
+        Determines if this coordinate frame can be transformed to another given frame.
 
         Parameters
         ----------
@@ -392,6 +399,7 @@ class BaseCoordinate(ABC):
         """
         # TODO! like matplotlib, do string overrides for modified methods
         from .sky_coordinate_parsers import _get_frame_class
+
         new_frame = (
             _get_frame_class(new_frame) if isinstance(new_frame, str) else new_frame
         )
@@ -402,7 +410,7 @@ class BaseCoordinate(ABC):
         """The number of coordinate values in this object."""
         return self.data.size
 
-    def to_table(self):
+    def to_table(self) -> QTable:
         """
         Convert this coordinate to a |QTable|.
 
@@ -414,11 +422,34 @@ class BaseCoordinate(ABC):
         -------
         `~astropy.table.QTable`
             A |QTable| containing the data of this coordinate.
+
+        Examples
+        --------
+        >>> from astropy import units as u
+        >>> from astropy.coordinates import Coordinate, ICRSFrame, UnitSphericalRepresentation
+        >>> coord = Coordinate(
+        ...     frame=ICRSFrame(),
+        ...     data=UnitSphericalRepresentation(lon=[40, 70]*u.deg, lat=[0, -20]*u.deg),
+        ... )
+        >>> t = coord.to_table()
+        >>> t
+        <QTable length=2>
+           ra     dec
+          deg     deg
+        float64 float64
+        ------- -------
+           40.0     0.0
+           70.0   -20.0
+        >>> t.meta
+        {'representation_type': 'spherical'}
         """
         from astropy.table import QTable
 
         columns = {}
         metadata = {}
+        # Record attributes that have the same length as self as columns in the
+        # table, and the other attributes as table metadata.  This matches
+        # table.serialize._represent_mixin_as_column().
         for key, value in self.info._represent_as_dict().items():
             if getattr(value, "shape", ())[:1] == (len(self),):
                 columns[key] = value
@@ -478,6 +509,8 @@ class BaseCoordinate(ABC):
         """
         Override the builtin `dir` to include representation
         and differential component names.
+
+        TODO: dynamic representation transforms (i.e. include cylindrical et al.).
         """
         dir_values = (
             set(super().__dir__())
@@ -485,9 +518,7 @@ class BaseCoordinate(ABC):
             | set(self.frame.get_representation_component_names("s"))
         )
         # Include registered frame-specific properties.
-        dir_values.update(
-            BaseCoordinate._get_frame_props(self.frame.name)
-        )
+        dir_values.update(BaseCoordinate._get_frame_props(self.frame.name))
         return sorted(dir_values)
 
     @staticmethod
@@ -499,6 +530,7 @@ class BaseCoordinate(ABC):
         frame instance when any attribute was modified, or the original
         frame unchanged.
         """
+
         def apply_method(value):
             if isinstance(value, ShapedLikeNDArray):
                 return value._apply(method, *args, **kwargs)
@@ -521,7 +553,13 @@ class BaseCoordinate(ABC):
                 needs_new_frame = True
             frame_attrs[attr] = value
 
-        return type(frame)(**frame_attrs) if needs_new_frame else frame
+        if needs_new_frame:
+            return type(frame)(
+                representation_type=frame.representation_type,
+                differential_type=frame.differential_type,
+                **frame_attrs,
+            )
+        return frame
 
     def to_string(self, style="decimal", **kwargs):
         """
@@ -622,7 +660,7 @@ class BaseCoordinate(ABC):
         Raises
         ------
         ValueError
-            If the coordinate has no associated data.            
+            If the coordinate has no associated data.
         """
         if attrs:
             values = operator.attrgetter(*attrs)(self)
@@ -648,13 +686,13 @@ class BaseCoordinate(ABC):
         return self.get_mask()
 
     def _prepare_unit_sphere_coords(self, other, origin_mismatch):
+        from . import representation as r
+        from .baseframe import frame_transform_graph
         from .errors import (
             NonRotationTransformationError,
             NonRotationTransformationWarning,
         )
         from .transformations import DynamicMatrixTransform, StaticMatrixTransform
-        from .baseframe import frame_transform_graph
-        from . import representation as r
 
         other_frame = getattr(other, "frame", other)
         if not (
@@ -676,14 +714,15 @@ class BaseCoordinate(ABC):
                     f"{origin_mismatch=} is invalid. Allowed values are 'ignore', "
                     "'warn' or 'error'."
                 )
-            
+
         # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         self_sph = self.represent_as(r.UnitSphericalRepresentation)
-        from .baseframe import BaseCoordinateFrame as _BCF
+        from .baseframe import BaseCoordinateFrame
+
         if self.frame.is_equivalent_frame(other_frame):
             # Same frame: no transform needed; use other directly.
             other_in_self = other
-        elif isinstance(other_frame, _BCF) and other_frame.has_data:
+        elif isinstance(other_frame, BaseCoordinateFrame) and other_frame.has_data:
             other_in_self = other_frame.transform_to(self.frame)
         else:
             other_in_self = other.transform_to(self.frame, merge_attributes=False)
@@ -726,10 +765,10 @@ class BaseCoordinate(ABC):
         return _position_angle(*self._prepare_unit_sphere_coords(other, "ignore"))
 
     def separation(
-            self, 
-            other: "BaseCoordinate", 
-            *, 
-            origin_mismatch: Literal["ignore", "warn", "error"] = "warn",
+        self,
+        other: "BaseCoordinate",
+        *,
+        origin_mismatch: Literal["ignore", "warn", "error"] = "warn",
     ) -> Angle:
         """
         Compute on-sky separation between this coordinate and another.
@@ -777,7 +816,7 @@ class BaseCoordinate(ABC):
 
     def separation_3d(self, other):
         """
-        Compute three dimensional separation between this coordinate
+        Computes three dimensional separation between this coordinate
         and another.
 
         For more on how to use this (and related) functionality, see the
@@ -806,8 +845,11 @@ class BaseCoordinate(ABC):
                 "This object does not have a distance; cannot compute 3d separation."
             )
 
+        # do this first just in case the conversion somehow creates a distance
         _other_frame = getattr(other, "frame", other)
-        if hasattr(_other_frame, "transform_to") and getattr(_other_frame, "has_data", False):
+        if hasattr(_other_frame, "transform_to") and getattr(
+            _other_frame, "has_data", False
+        ):
             other = _other_frame.transform_to(self)
         else:
             other = other.transform_to(self, merge_attributes=False)
@@ -817,15 +859,17 @@ class BaseCoordinate(ABC):
                 "The other object does not have a distance; "
                 "cannot compute 3d separation."
             )
-        
+
+        # drop the differentials to ensure they don't do anything odd in the
+        # subtraction
         dist = (
             self.data.without_differentials().represent_as(r.CartesianRepresentation)
             - other.data.without_differentials().represent_as(r.CartesianRepresentation)
         ).norm()
         return dist if dist.unit == u.one else Distance(dist)
-    
+
     def _data_repr(self):
-        """Return a string representation of the coordinate data.
+        """Returns a string representation of the coordinate data.
 
         Produces the data portion of the ``__repr__`` string, with
         frame-specific component names substituted for the generic
@@ -879,7 +923,9 @@ class BaseCoordinate(ABC):
         first, *middle, last = repr(data.differentials["s"]).split("\n")
         if first.startswith("<"):
             first = " " + first.split(" ", 1)[1]
-        for frm_nm, rep_nm in self.frame.get_representation_component_names("s").items():
+        for frm_nm, rep_nm in self.frame.get_representation_component_names(
+            "s"
+        ).items():
             first = first.replace(rep_nm, frm_nm)
         data_repr_spl[-1] = "\n".join((first, *middle, last.removesuffix(">")))
         return "\n".join(data_repr_spl)
@@ -900,6 +946,9 @@ class Coordinate(BaseCoordinate, MaskableShapedLikeNDArray):
     data : `~astropy.coordinates.BaseRepresentation` subclass instance
         The coordinate data.
     """
+
+    # TODO: APE23: remove when BaseCoordinateFrame is deprecated
+    has_data = True
 
     def __init__(self, frame, data):
         self._frame = frame

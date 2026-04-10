@@ -19,7 +19,7 @@ import operator
 import warnings
 from abc import ABC
 from collections import defaultdict
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, Union
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 import numpy as np
 
@@ -32,22 +32,18 @@ from astropy.utils.exceptions import AstropyWarning
 from astropy.utils.masked import MaskableShapedLikeNDArray
 
 from . import representation as r
-from .angles import Angle, Latitude, Longitude
+from .angles import Angle
 from .attributes import Attribute
-from .coordinate import BaseCoordinate
+from .coordinate import BaseCoordinate, Coordinate
 from .errors import (
     ConvertError,
-    NonRotationTransformationError,
-    NonRotationTransformationWarning,
 )
 from .transformations import (
-    DynamicMatrixTransform,
-    StaticMatrixTransform,
     TransformGraph,
 )
 
 if TYPE_CHECKING:
-    from astropy.coordinates import SkyCoord
+    pass
 
 # the graph used for all transformations between frames
 frame_transform_graph = TransformGraph()
@@ -362,6 +358,10 @@ class CoordinateFrameInfo(MixinInfo):
         return out
 
 
+# Set info descriptor on Coordinate here (rather than in coordinate.py)
+# to avoid circular import
+Coordinate.info = CoordinateFrameInfo()
+
 base_doc = """{__doc__}
     Parameters
     ----------
@@ -400,8 +400,9 @@ _components = """
         Coordinate components, with names that depend on the subclass.
 """
 
+
 @format_doc(base_doc_frame, footer="")
-class BaseFrame(ABC):
+class BaseFrame(ABC):  # noqa: B024
     """
     The base class for data-less reference frame classes.
 
@@ -452,6 +453,16 @@ class BaseFrame(ABC):
 
     # Default empty frame_attricutes dict
     frame_attributes: dict[str, Attribute] = {}
+
+    # checked by CoordinateFrameInfo
+    has_data = False
+
+    # Allow data-less frame classes to be used as Table mixin columns
+    info = CoordinateFrameInfo()
+
+    @property
+    def shape(self):
+        return self._shape
 
     def __init_subclass__(cls, **kwargs):
         # We first check for explicitly set values for these:
@@ -878,19 +889,28 @@ class BaseFrame(ABC):
     @staticmethod
     def _frameattr_equiv(left_fattr, right_fattr):  # noqa: PLR0911
         """
-        Determine if two frame attributes (representations, coordinate attributes) are 
-        equivalent.
+        Determine if two frame attributes are equivalent.  Implemented as a
+        staticmethod mainly as a convenient location, although conceivable it
+        might be desirable for subclasses to override this behavior.
+
+        Primary purpose is to check for equality of representations.
+        Secondary purpose is to check for equality of coordinate attributes,
+        which first checks whether they themselves are in equivalent frames
+        before checking for equality in the normal fashion.  This is because
+        checking for equality with non-equivalent frames raises an error.
         """
         if left_fattr is right_fattr:
+            # shortcut if it's exactly the same object
             return True
         elif left_fattr is None or right_fattr is None:
+            # shortcut if one attribute is unspecified and the other isn't
             return False
 
         left_is_repr = isinstance(left_fattr, r.BaseRepresentationOrDifferential)
         if left_is_repr ^ isinstance(right_fattr, r.BaseRepresentationOrDifferential):
             return False
         if left_is_repr:
-            # both are representations
+            # both are representations.
             if getattr(left_fattr, "differentials", False) or getattr(
                 right_fattr, "differentials", False
             ):
@@ -907,8 +927,8 @@ class BaseFrame(ABC):
                 else left_fattr.to_cartesian() == right_fattr.to_cartesian()
             )
 
-        left_is_coord = isinstance(left_fattr, BaseCoordinateFrame)
-        if left_is_coord ^ isinstance(right_fattr, BaseCoordinateFrame):
+        left_is_coord = isinstance(left_fattr, BaseCoordinate)
+        if left_is_coord ^ isinstance(right_fattr, BaseCoordinate):
             return False
         if left_is_coord:
             # both are coordinates
@@ -923,32 +943,30 @@ class BaseFrame(ABC):
         Check if this object is the same frame as the ``other`` object.
 
         To be the same frame, two objects must be the same frame class and have
-        the same frame attributes. Their data does not need to match.
+        the same frame attributes. Note that it does *not* matter what, if any,
+        data either object has.
 
         Parameters
         ----------
         other : :class:`~astropy.coordinates.BaseFrame`
-            The frame to check against
+            The other frame to check
 
         Returns
         -------
         isequiv : bool
-            True if the frames are equivalent
+            True if the frames are the same, False if not.
 
         Raises
         ------
         TypeError
-            If ``other`` is not a `~astropy.coordinates.BaseFrame` or subclass.
+            If ``other`` isn't a `~astropy.coordinates.BaseFrame` or subclass.
         """
         self_type = type(self)
         other_type = type(other)
         # TODO: APE23: simplify when deprecate BaseCoordinateFrame
         if self_type == other_type or (
             isinstance(other, BaseFrame)
-            and (
-                issubclass(self_type, other_type)
-                or issubclass(other_type, self_type)
-            )
+            and (issubclass(self_type, other_type) or issubclass(other_type, self_type))
             and not (
                 issubclass(self_type, BaseCoordinateFrame)
                 and issubclass(other_type, BaseCoordinateFrame)
@@ -973,7 +991,8 @@ class BaseFrame(ABC):
         for attribute_name in self.frame_attributes:
             attr = getattr(self, attribute_name)
             # Check if this object has a way of representing itself
-            # specific to being an attribute of a frame
+            # specific to being an attribute of a frame. (Note, this is not the
+            # Attribute class, it's the actual object).
             if hasattr(attr, "_astropy_repr_in_frame"):
                 attrstr = attr._astropy_repr_in_frame()
             else:
@@ -1003,7 +1022,7 @@ class BaseFrame(ABC):
         """
         Transform ``BaseRepresentation`` data from this frame to another frame.
 
-        Uses the coordinate transform graph to find the right transformation. 
+        Uses the coordinate transform graph to find the right transformation.
         Supports `~astropy.coordinates.RepresentationFunctionTransform` transforms and
         legacy `~astropy.coordinates.FunctionTransform` transforms.
 
@@ -1024,12 +1043,12 @@ class BaseFrame(ABC):
         trans = frame_transform_graph.get_transform(type(self), type(frame))
         if trans is None:
             raise ConvertError(
-                f"Cannot transform from {type(self).__name__} "
-                f"to {type(frame).__name__}"
+                f"Cannot transform from {type(self).__name__} to {type(frame).__name__}"
             )
 
         if isinstance(trans, RepresentationFunctionTransform):
             from astropy.coordinates.coordinate import Coordinate
+
             coord = Coordinate(frame=self, data=data)
             result = trans(coord, frame)
             return result.data
@@ -1092,6 +1111,8 @@ class BaseCoordinateFrame(BaseFrame, BaseCoordinate, MaskableShapedLikeNDArray):
 
     where ``{lon}`` and ``{lat}`` are the frame names of the angular components.
     """
+
+    # TODO: APE23: remove with legacy frame classes
 
     # Declare that BaseCoordinateFrame can be used as a Table column by defining
     # the info property.
@@ -1402,7 +1423,6 @@ class BaseCoordinateFrame(BaseFrame, BaseCoordinate, MaskableShapedLikeNDArray):
 
     def __bool__(self):
         return self.has_data and self.size > 0
-
 
     def _replicate(self, data, copy=False, **kwargs):
         """Base for replicating a frame, with possibly different attributes.
@@ -1756,150 +1776,6 @@ class BaseCoordinateFrame(BaseFrame, BaseCoordinate, MaskableShapedLikeNDArray):
             raise ConvertError(msg.format(self.__class__, new_frame.__class__))
         return trans(self, new_frame)
 
-    def is_transformable_to(self, new_frame):
-        """
-        Determines if this coordinate frame can be transformed to another
-        given frame.
-
-        Parameters
-        ----------
-        new_frame : `~astropy.coordinates.BaseCoordinateFrame` subclass or instance
-            The proposed frame to transform into.
-
-        Returns
-        -------
-        transformable : bool or str
-            `True` if this can be transformed to ``new_frame``, `False` if
-            not, or the string 'same' if ``new_frame`` is the same system as
-            this object but no transformation is defined.
-
-        Notes
-        -----
-        A return value of 'same' means the transformation will work, but it will
-        just give back a copy of this object.  The intended usage is::
-
-            if coord.is_transformable_to(some_unknown_frame):
-                coord2 = coord.transform_to(some_unknown_frame)
-
-        This will work even if ``some_unknown_frame``  turns out to be the same
-        frame class as ``coord``.  This is intended for cases where the frame
-        is the same regardless of the frame attributes (e.g. ICRS), but be
-        aware that it *might* also indicate that someone forgot to define the
-        transformation between two objects of the same frame class but with
-        different attributes.
-        """
-        new_frame_cls = new_frame if isinstance(new_frame, type) else type(new_frame)
-        if frame_transform_graph.get_transform(type(self), new_frame_cls):
-            return True
-        return "same" if new_frame_cls is type(self) else False
-
-    def is_frame_attr_default(self, attrnm):
-        """
-        Determine whether or not a frame attribute has its value because it's
-        the default value, or because this frame was created with that value
-        explicitly requested.
-
-        Parameters
-        ----------
-        attrnm : str
-            The name of the attribute to check.
-
-        Returns
-        -------
-        isdefault : bool
-            True if the attribute ``attrnm`` has its value by default, False if
-            it was specified at creation of this frame.
-        """
-        return attrnm in self._attr_names_with_defaults
-
-    @staticmethod
-    def _frameattr_equiv(left_fattr, right_fattr):  # noqa: PLR0911
-        """
-        Determine if two frame attributes are equivalent.  Implemented as a
-        staticmethod mainly as a convenient location, although conceivable it
-        might be desirable for subclasses to override this behavior.
-
-        Primary purpose is to check for equality of representations.
-        Secondary purpose is to check for equality of coordinate attributes,
-        which first checks whether they themselves are in equivalent frames
-        before checking for equality in the normal fashion.  This is because
-        checking for equality with non-equivalent frames raises an error.
-        """
-        if left_fattr is right_fattr:
-            # shortcut if it's exactly the same object
-            return True
-        elif left_fattr is None or right_fattr is None:
-            # shortcut if one attribute is unspecified and the other isn't
-            return False
-
-        left_is_repr = isinstance(left_fattr, r.BaseRepresentationOrDifferential)
-        if left_is_repr ^ isinstance(right_fattr, r.BaseRepresentationOrDifferential):
-            return False
-        if left_is_repr:
-            # both are representations.
-            if getattr(left_fattr, "differentials", False) or getattr(
-                right_fattr, "differentials", False
-            ):
-                warnings.warn(
-                    "Two representation frame attributes were checked for equivalence"
-                    " when at least one of them has differentials.  This yields False"
-                    " even if the underlying representations are equivalent (although"
-                    " this may change in future versions of Astropy)",
-                    AstropyWarning,
-                )
-                return False
-            return np.all(
-                left_fattr == right_fattr
-                if type(left_fattr) is type(right_fattr)
-                else left_fattr.to_cartesian() == right_fattr.to_cartesian()
-            )
-
-        left_is_coord = isinstance(left_fattr, BaseCoordinateFrame)
-        if left_is_coord ^ isinstance(right_fattr, BaseCoordinateFrame):
-            return False
-        if left_is_coord:
-            # both are coordinates
-            return left_fattr.is_equivalent_frame(right_fattr) and np.all(
-                left_fattr == right_fattr
-            )
-
-        return np.all(left_fattr == right_fattr)
-
-    def is_equivalent_frame(self, other):
-        """
-        Checks if this object is the same frame as the ``other`` object.
-
-        To be the same frame, two objects must be the same frame class and have
-        the same frame attributes.  Note that it does *not* matter what, if any,
-        data either object has.
-
-        Parameters
-        ----------
-        other : :class:`~astropy.coordinates.BaseCoordinateFrame`
-            the other frame to check
-
-        Returns
-        -------
-        isequiv : bool
-            True if the frames are the same, False if not.
-
-        Raises
-        ------
-        TypeError
-            If ``other`` isn't a `~astropy.coordinates.BaseCoordinateFrame` or subclass.
-        """
-        if self.__class__ == other.__class__:
-            return all(
-                self._frameattr_equiv(getattr(self, attr), getattr(other, attr))
-                for attr in self.frame_attributes
-            )
-        elif not isinstance(other, BaseCoordinateFrame):
-            raise TypeError(
-                "Tried to do is_equivalent_frame on something that isn't a frame"
-            )
-        else:
-            return False
-
     def __repr__(self):
         frameattrs = self._frame_attrs_repr()
         data_repr = self._data_repr()
@@ -1914,80 +1790,12 @@ class BaseCoordinateFrame(BaseFrame, BaseCoordinate, MaskableShapedLikeNDArray):
 
     def _data_repr(self):
         """Returns a string representation of the coordinate data."""
+        # TODO: APE23: moved to BaseCoordinate.
+        # Data-less frames shouldn't show the 'data' part of the repr,
+        # so override here to return an empty string
         if not self.has_data:
             return ""
-
-        if rep_cls := self.representation_type:
-            if isinstance(self.data, getattr(rep_cls, "_unit_representation", ())):
-                rep_cls = self.data.__class__
-
-            dif_cls = None
-            if "s" in self.data.differentials:
-                dif_cls = self.get_representation_cls("s")
-                if isinstance(
-                    dif_data := self.data.differentials["s"],
-                    (
-                        r.UnitSphericalDifferential,
-                        r.UnitSphericalCosLatDifferential,
-                        r.RadialDifferential,
-                    ),
-                ):
-                    dif_cls = dif_data.__class__
-
-            data = self.represent_as(rep_cls, dif_cls, in_frame_units=True)
-
-            data_repr = repr(data)
-            # Generate the list of component names out of the repr string
-            part1, _, remainder = data_repr.partition("(")
-            if remainder:
-                comp_str, part2 = remainder.split(")", 1)
-                # Swap in frame-specific component names
-                invnames = {
-                    nmrepr: nmpref
-                    for nmpref, nmrepr in self.representation_component_names.items()
-                }
-                comp_names = (invnames.get(name, name) for name in comp_str.split(", "))
-                # Reassemble the repr string
-                data_repr = f"{part1}({', '.join(comp_names)}){part2}"
-
-        else:
-            data = self.data
-            data_repr = repr(self.data)
-
-        if data_repr.startswith(class_prefix := f"<{type(data).__name__} "):
-            data_repr = data_repr.removeprefix(class_prefix).removesuffix(">")
-        else:
-            data_repr = "Data:\n" + data_repr
-
-        if "s" not in self.data.differentials:
-            return data_repr
-
-        data_repr_spl = data_repr.split("\n")
-        first, *middle, last = repr(data.differentials["s"]).split("\n")
-        if first.startswith("<"):
-            first = " " + first.split(" ", 1)[1]
-        for frm_nm, rep_nm in self.get_representation_component_names("s").items():
-            first = first.replace(rep_nm, frm_nm)
-        data_repr_spl[-1] = "\n".join((first, *middle, last.removesuffix(">")))
-        return "\n".join(data_repr_spl)
-
-    def _frame_attrs_repr(self):
-        """
-        Returns a string representation of the frame's attributes, if any.
-        """
-        attr_strs = []
-        for attribute_name in self.frame_attributes:
-            attr = getattr(self, attribute_name)
-            # Check to see if this object has a way of representing itself
-            # specific to being an attribute of a frame. (Note, this is not the
-            # Attribute class, it's the actual object).
-            if hasattr(attr, "_astropy_repr_in_frame"):
-                attrstr = attr._astropy_repr_in_frame()
-            else:
-                attrstr = str(attr)
-            attr_strs.append(f"{attribute_name}={attrstr}")
-
-        return ", ".join(attr_strs)
+        return super()._data_repr()
 
     def _apply(self, method, *args, **kwargs):
         """Create a new instance, applying a method to the underlying data.
@@ -2123,19 +1931,6 @@ class BaseCoordinateFrame(BaseFrame, BaseCoordinate, MaskableShapedLikeNDArray):
 
     insert.__doc__ = CoordinateFrameInfo._insert.__doc__
 
-    def __dir__(self):
-        """
-        Override the builtin `dir` behavior to include representation
-        names.
-
-        TODO: dynamic representation transforms (i.e. include cylindrical et al.).
-        """
-        return sorted(
-            set(super().__dir__())
-            | set(self.representation_component_names)
-            | set(self.get_representation_component_names("s"))
-        )
-
     def __getattr__(self, attr):
         """
         Allow access to attributes on the representation and differential as
@@ -2220,307 +2015,6 @@ class BaseCoordinateFrame(BaseFrame, BaseCoordinate, MaskableShapedLikeNDArray):
 
     def __ne__(self, value):
         return np.logical_not(self == value)
-
-    def _prepare_unit_sphere_coords(
-        self,
-        other: Union["BaseCoordinateFrame", "SkyCoord"],
-        origin_mismatch: Literal["ignore", "warn", "error"],
-    ) -> tuple[Longitude, Latitude, Longitude, Latitude]:
-        other_frame = getattr(other, "frame", other)
-        if not (
-            origin_mismatch == "ignore"
-            or self.is_equivalent_frame(other_frame)
-            or all(
-                isinstance(comp, (StaticMatrixTransform, DynamicMatrixTransform))
-                for comp in frame_transform_graph.get_transform(
-                    type(self), type(other_frame)
-                ).transforms
-            )
-        ):
-            if origin_mismatch == "warn":
-                warnings.warn(NonRotationTransformationWarning(self, other_frame))
-            elif origin_mismatch == "error":
-                raise NonRotationTransformationError(self, other_frame)
-            else:
-                raise ValueError(
-                    f"{origin_mismatch=} is invalid. Allowed values are 'ignore', "
-                    "'warn' or 'error'."
-                )
-        self_sph = self.represent_as(r.UnitSphericalRepresentation)
-        # Determine how to get other into self's frame
-        if self.is_equivalent_frame(other_frame):
-            # Same frame; use other's data directly without transforming
-            other_sph = other.represent_as(r.UnitSphericalRepresentation)
-        elif hasattr(other_frame, "transform_to") and getattr(other_frame, "has_data", False):
-            # other.frame is a BaseCoordianteFrame with data; transform it directly
-            other_sph = other_frame.transform_to(self).represent_as(
-                r.UnitSphericalRepresentation
-            )
-        else:
-            # other.frame is a dataless frame or a data-less BaseCoordinateFrame.
-            other_sph = other.transform_to(self, merge_attributes=False).represent_as(
-                r.UnitSphericalRepresentation
-            )
-        return self_sph.lon, self_sph.lat, other_sph.lon, other_sph.lat
-
-    def position_angle(self, other: Union["BaseCoordinateFrame", "SkyCoord"]) -> Angle:
-        """Compute the on-sky position angle to another coordinate.
-
-        Parameters
-        ----------
-        other : `~astropy.coordinates.BaseCoordinateFrame` or `~astropy.coordinates.SkyCoord`
-            The other coordinate to compute the position angle to.  It is
-            treated as the "head" of the vector of the position angle.
-
-        Returns
-        -------
-        `~astropy.coordinates.Angle`
-            The (positive) position angle of the vector pointing from ``self``
-            to ``other``, measured East from North.  If either ``self`` or
-            ``other`` contain arrays, this will be an array following the
-            appropriate `numpy` broadcasting rules.
-
-        Examples
-        --------
-        >>> from astropy import units as u
-        >>> from astropy.coordinates import ICRS, SkyCoord
-        >>> c1 = SkyCoord(0*u.deg, 0*u.deg)
-        >>> c2 = ICRS(1*u.deg, 0*u.deg)
-        >>> c1.position_angle(c2).to(u.deg)
-        <Angle 90. deg>
-        >>> c2.position_angle(c1).to(u.deg)
-        <Angle 270. deg>
-        >>> c3 = SkyCoord(1*u.deg, 1*u.deg)
-        >>> c1.position_angle(c3).to(u.deg)  # doctest: +FLOAT_CMP
-        <Angle 44.995636455344844 deg>
-        """
-        return position_angle(*self._prepare_unit_sphere_coords(other, "ignore"))
-
-    def separation(
-        self,
-        other: Union["BaseCoordinateFrame", "SkyCoord"],
-        *,
-        origin_mismatch: Literal["ignore", "warn", "error"] = "warn",
-    ) -> Angle:
-        """
-        Computes on-sky separation between this coordinate and another.
-
-        For more on how to use this (and related) functionality, see the
-        examples in :ref:`astropy-coordinates-separations-matching`.
-
-        Parameters
-        ----------
-        other : `~astropy.coordinates.BaseCoordinateFrame` or `~astropy.coordinates.SkyCoord`
-            The coordinate to get the separation to.
-        origin_mismatch : {"warn", "ignore", "error"}, keyword-only
-            If the ``other`` coordinates are in a different frame then they
-            will have to be transformed, and if the transformation is not a
-            pure rotation then ``self.separation(other)`` can be
-            different from ``other.separation(self)``. With
-            ``origin_mismatch="warn"`` (default) the transformation is
-            always performed, but a warning is emitted if it is not a
-            pure rotation. If ``origin_mismatch="ignore"`` then the
-            required transformation is always performed without warnings.
-            If ``origin_mismatch="error"`` then only transformations
-            that are pure rotations are allowed.
-
-        Returns
-        -------
-        sep : `~astropy.coordinates.Angle`
-            The on-sky separation between this and the ``other`` coordinate.
-
-        Notes
-        -----
-        The separation is calculated using the Vincenty formula, which
-        is stable at all locations, including poles and antipodes [1]_.
-
-        .. [1] https://en.wikipedia.org/wiki/Great-circle_distance
-
-        """
-        return Angle(
-            angular_separation(
-                *self._prepare_unit_sphere_coords(other, origin_mismatch)
-            ),
-            unit=u.degree,
-        )
-
-    def separation_3d(self, other):
-        """
-        Computes three dimensional separation between this coordinate
-        and another.
-
-        For more on how to use this (and related) functionality, see the
-        examples in :ref:`astropy-coordinates-separations-matching`.
-
-        Parameters
-        ----------
-        other : `~astropy.coordinates.BaseCoordinateFrame` or `~astropy.coordinates.SkyCoord`
-            The coordinate system to get the distance to.
-
-        Returns
-        -------
-        sep : `~astropy.coordinates.Distance`
-            The real-space distance between these two coordinates.
-
-        Raises
-        ------
-        ValueError
-            If this or the other coordinate do not have distances.
-        """
-        if isinstance(self.data, r.UnitSphericalRepresentation):
-            raise ValueError(
-                "This object does not have a distance; cannot compute 3d separation."
-            )
-
-        # do this first just in case the conversion somehow creates a distance
-        other = getattr(other, "frame", other).transform_to(self)
-
-        if isinstance(other, r.UnitSphericalRepresentation):
-            raise ValueError(
-                "The other object does not have a distance; "
-                "cannot compute 3d separation."
-            )
-
-        # drop the differentials to ensure they don't do anything odd in the
-        # subtraction
-        dist = (
-            self.data.without_differentials().represent_as(r.CartesianRepresentation)
-            - other.data.without_differentials().represent_as(r.CartesianRepresentation)
-        ).norm()
-        return dist if dist.unit == u.one else Distance(dist)
-
-    @property
-    def cartesian(self):
-        """
-        Shorthand for a cartesian representation of the coordinates in this
-        object.
-        """
-        # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this
-        return self.represent_as("cartesian", in_frame_units=True)
-
-    @property
-    def cylindrical(self):
-        """
-        Shorthand for a cylindrical representation of the coordinates in this
-        object.
-        """
-        # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this
-        return self.represent_as("cylindrical", in_frame_units=True)
-
-    @property
-    def spherical(self):
-        """
-        Shorthand for a spherical representation of the coordinates in this
-        object.
-        """
-        # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this
-        return self.represent_as("spherical", in_frame_units=True)
-
-    @property
-    def sphericalcoslat(self):
-        """
-        Shorthand for a spherical representation of the positional data and a
-        `~astropy.coordinates.SphericalCosLatDifferential` for the velocity
-        data in this object.
-        """
-        # TODO: if representations are updated to use a full transform graph,
-        #       the representation aliases should not be hard-coded like this
-        return self.represent_as("spherical", "sphericalcoslat", in_frame_units=True)
-
-    @property
-    def velocity(self):
-        """
-        Shorthand for retrieving the Cartesian space-motion as a
-        `~astropy.coordinates.CartesianDifferential` object.
-
-        This is equivalent to calling ``self.cartesian.differentials['s']``.
-        """
-        if "s" not in self.data.differentials:
-            raise ValueError(
-                "Frame has no associated velocity (Differential) data information."
-            )
-
-        return self.cartesian.differentials["s"]
-
-    @property
-    def proper_motion(self):
-        """
-        Shorthand for the two-dimensional proper motion as a
-        `~astropy.units.Quantity` object with angular velocity units. In the
-        returned `~astropy.units.Quantity`, ``axis=0`` is the longitude/latitude
-        dimension so that ``.proper_motion[0]`` is the longitudinal proper
-        motion and ``.proper_motion[1]`` is latitudinal. The longitudinal proper
-        motion already includes the cos(latitude) term.
-        """
-        if "s" not in self.data.differentials:
-            raise ValueError(
-                "Frame has no associated velocity (Differential) data information."
-            )
-
-        sph = self.represent_as("spherical", "sphericalcoslat", in_frame_units=True)
-        pm_lon = sph.differentials["s"].d_lon_coslat
-        pm_lat = sph.differentials["s"].d_lat
-        return (
-            np.stack((pm_lon.value, pm_lat.to(pm_lon.unit).value), axis=0) * pm_lon.unit
-        )
-
-    @property
-    def radial_velocity(self):
-        """
-        Shorthand for the radial or line-of-sight velocity as a
-        `~astropy.units.Quantity` object.
-        """
-        if "s" not in self.data.differentials:
-            raise ValueError(
-                "Frame has no associated velocity (Differential) data information."
-            )
-
-        sph = self.represent_as("spherical", in_frame_units=True)
-        return sph.differentials["s"].d_distance
-
-    def to_table(self) -> QTable:
-        """
-        Convert this |BaseFrame| to a |QTable|.
-
-        Any attributes that have the same length as the |BaseFrame| will be
-        converted to columns of the |QTable|. All other attributes will be
-        recorded as metadata.
-
-        Returns
-        -------
-        `~astropy.table.QTable`
-            A |QTable| containing the data of this |BaseFrame|.
-
-        Examples
-        --------
-        >>> from astropy.coordinates import ICRS
-        >>> coord = ICRS(ra=[40, 70]*u.deg, dec=[0, -20]*u.deg)
-        >>> t =  coord.to_table()
-        >>> t
-        <QTable length=2>
-           ra     dec
-          deg     deg
-        float64 float64
-        ------- -------
-           40.0     0.0
-           70.0   -20.0
-        >>> t.meta
-        {'representation_type': 'spherical'}
-        """
-        columns = {}
-        metadata = {}
-        # Record attributes that have the same length as self as columns in the
-        # table, and the other attributes as table metadata.  This matches
-        # table.serialize._represent_mixin_as_column().
-        for key, value in self.info._represent_as_dict().items():
-            if getattr(value, "shape", ())[:1] == (len(self),):
-                columns[key] = value
-            else:
-                metadata[key] = value
-        return QTable(columns, meta=metadata)
 
 
 class GenericFrame(BaseCoordinateFrame):

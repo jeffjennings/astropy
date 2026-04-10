@@ -122,6 +122,7 @@ def _get_frame_without_data(args, kwargs):
                     frame = sub(**fa)
                     break
 
+    # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
     if isinstance(frame, BaseCoordinateFrame):
         # Extract any frame attributes, checking for conflicts with kwargs.
         for attr in frame.frame_attributes:
@@ -217,6 +218,7 @@ def _get_frame_without_data(args, kwargs):
         frame_cls = ICRS
 
     # By now, frame_cls should be set - if it's not, something went wrong
+    # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
     if not issubclass(frame_cls, BaseCoordinateFrame):
         # We should hopefully never get here...
         raise ValueError(f"Frame class has unexpected type: {frame_cls.__name__}")
@@ -398,6 +400,7 @@ def _parse_coordinate_arg(coords, frame, units):
         is_scalar = True
         coords = [coords]
 
+    # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
     if isinstance(coords, (SkyCoord, BaseCoordinateFrame)):
         # Note that during parsing of `frame` it is checked that any coordinate
         # args have the same frame as explicitly supplied, so don't worry here.

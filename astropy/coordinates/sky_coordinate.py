@@ -1,4 +1,5 @@
 import copy
+import functools
 import re
 import warnings
 from collections.abc import Callable
@@ -9,6 +10,7 @@ import numpy as np
 
 from astropy import units as u
 from astropy.constants import c as speed_of_light
+from astropy.table import QTable
 from astropy.time import Time
 from astropy.utils import ShapedLikeNDArray
 from astropy.utils.exceptions import AstropyUserWarning
@@ -22,9 +24,8 @@ from .baseframe import (
     GenericFrame,
     frame_transform_graph,
 )
-from .coordinate import BaseCoordinate
-from .coordinate import Coordinate
 from .builtin_frames import SkyOffsetFrame
+from .coordinate import BaseCoordinate, Coordinate
 from .distances import Distance
 from .errors import ConvertError
 from .representation import (
@@ -41,14 +42,14 @@ from .sky_coordinate_parsers import (
 __all__ = ["SkyCoord", "SkyCoordInfo"]
 
 
-# TODO: APE23: once BaseCoordinateFrame is deprecated, remove _split_bcf
+# TODO: APE23: remove _split_bcf when BaseCoordinateFrame is deprecated
 def _split_bcf(bcf, copy=True):
     """Split a `~astropy.coordinates.BaseCoordinateFrame` into
     ``(dataless_frame, representation)``.
 
-    Finds the corresponding dataless ``BaseFrame`` subclass 
+    Finds the corresponding dataless ``BaseFrame`` subclass
     (e.g., ``ICRSFrame`` from ``ICRS``), instantiates it with the
-    BaseCoordinateFrame's frame attributes, and returns it along with the 
+    BaseCoordinateFrame's frame attributes, and returns it along with the
     BaseCoordinateFrame's data.
     """
     for cls in type(bcf).__mro__:
@@ -57,7 +58,6 @@ def _split_bcf(bcf, copy=True):
             and issubclass(cls, BaseFrame)
             and not issubclass(cls, BaseCoordinateFrame)
         ):
-
             frame_attrs = {
                 k: getattr(bcf, k)
                 for k in type(bcf).frame_attributes
@@ -218,8 +218,8 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
     # info property.
     info = SkyCoordInfo()
 
-    # TODO: APE23: once BaseCoordinateFrame is deprecated, remove has_data and just 
-    # check if self._frame is None
+    # TODO: APE23: remove has_data and just check if self._frame is None
+    # when BaseCoordinateFrame is deprecated
     has_data = True
 
     # Methods implemented by the underlying frame
@@ -239,12 +239,13 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
             for attr, val in kwargs.items():
                 setattr(self, attr, val)
             return
-        
+
         # If all that is passed in is a frame instance that already has data,
         # we should bypass all of the parsing and logic below. This is here
         # to make this the fastest way to create a SkyCoord instance. Many of
         # the classmethods implemented for performance enhancements will use
         # this as the initialization path
+        # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         if (
             len(args) == 1
             and len(kwargs) == 0
@@ -273,10 +274,9 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         else:
             # TODO: APE23: simplify once BaseCoordinateFrame is deprecated
             _dataless_frame_input = None
-            frame_arg = kwargs.get("frame", None)
-            if (
-                isinstance(frame_arg, BaseFrame)
-                and not isinstance(frame_arg, BaseCoordinateFrame)
+            frame_arg = kwargs.get("frame")
+            if isinstance(frame_arg, BaseFrame) and not isinstance(
+                frame_arg, BaseCoordinateFrame
             ):
                 _dataless_frame_input = frame_arg
                 for sub in type(_dataless_frame_input).__subclasses__():
@@ -327,17 +327,28 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
             else:
                 self._frame, self._data = _split_bcf(bcf, copy=copy)
 
-    @property
+    @functools.cached_property
     def cache(self):
-        """Cache for this SkyCoord.
+        """Cache for this SkyCoord, a dict.
 
-        Used to store computed representations so that repeated accesses to
-        attributes like ``.ra`` and ``.dec`` only compute the underlying
-        representation once.  The cache is cleared whenever the coordinate
-        data are mutated in-place (e.g. via `__setitem__`).
+        It stores anything that should be computed from the coordinate data (*not* from
+        the frame attributes). This can be used in functions to store anything that
+        might be expensive to compute but might be reused by some other function.
+        E.g.::
+
+            if 'user_data' in mycoord.cache:
+                data = mycoord.cache['user_data']
+            else:
+                mycoord.cache['user_data'] = data = expensive_func(mycoord.lat)
+
+        If in-place modifications are made to the coordinate data, the cache should
+        be cleared::
+
+            mycoord.cache.clear()
         """
         if "_cache" not in self.__dict__:
             from collections import defaultdict
+
             self.__dict__["_cache"] = defaultdict(dict)
         return self.__dict__["_cache"]
 
@@ -346,14 +357,15 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         """The coordinate frame as a `~astropy.coordinates.BaseCoordinateFrame`
         instance that includes the coordinate data.
 
-        During the deprecation cycle, this always returns a BaseCoordinateFrame instance 
+        During the deprecation cycle, this always returns a BaseCoordinateFrame instance
         with data (e.g. ``ICRS(ra=..., dec=...)``, not the internal
         ``ICRSFrame()``).  Internal code that needs the data-less
         frame should use ``self._frame``.
         """
-        # TODO: APE23: once BaseCoordinateFrame is deprecated, replace function with:
+        # TODO: APE23: replace function with:
         # def frame(self):
         #     return self._frame
+        # when BaseCoordinateFrame is deprecated
         bcf_frame = self.cache.get("frame", {}).get("bcf")
         if bcf_frame is not None:
             return bcf_frame
@@ -390,14 +402,59 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         return self._data
 
     def __replace__(self, **changes):
-        """Return a copy with specified fields replaced."""
-        frame = changes.get("frame", self.frame)
-        data = changes.get("data", self.data)
-        extra = {a: getattr(self, a) for a in self._extra_frameattr_names}
-        extra.update(
-            {k: v for k, v in changes.items() if k not in ("frame", "data")}
-        )
-        return self.__class__(data, frame=frame, **extra)
+        """Return a copy with specified fields replaced.
+
+        Parameters
+        ----------
+        data : `~astropy.coordinates.BaseRepresentation`, optional
+            New representation data.
+        frame : frame instance, optional
+            New frame (replaces the entire frame; mutually exclusive with
+            per-attribute frame overrides).
+        **changes
+            Frame attribute overrides (e.g. ``obstime=``) or extra frame
+            attributes stored on this |SkyCoord|.
+        """
+        data = changes.pop("data", self._data)
+        explicit_frame = changes.pop("frame", None)
+
+        # TODO: APE23: remove this first branch when BaseCoordinateFrame is deprecated
+        if isinstance(self._frame, BaseCoordinateFrame):
+            frame_attr_names = set(type(self._frame).frame_attributes)
+            frame_changes = {k: v for k, v in changes.items() if k in frame_attr_names}
+            extra_changes = {
+                k: v for k, v in changes.items() if k not in frame_attr_names
+            }
+            if explicit_frame is not None:
+                base_frame = explicit_frame
+            elif frame_changes:
+                base_frame = self._frame.replicate_without_data(**frame_changes)
+            else:
+                base_frame = self._frame
+            sc_extra = {a: getattr(self, a) for a in self._extra_frameattr_names}
+            sc_extra.update(extra_changes)
+            return self.__class__(base_frame.realize_frame(data), **sc_extra)
+        else:
+            # _frame is a data-less BaseFrame subclass.
+            frame_attr_names = set(type(self._frame).frame_attributes)
+            frame_changes = {k: v for k, v in changes.items() if k in frame_attr_names}
+            extra_changes = {
+                k: v for k, v in changes.items() if k not in frame_attr_names
+            }
+            if explicit_frame is not None:
+                new_frame = explicit_frame
+            elif frame_changes:
+                fa = {
+                    k: getattr(self._frame, k)
+                    for k in type(self._frame).frame_attributes
+                }
+                fa.update(frame_changes)
+                new_frame = type(self._frame)(**fa)
+            else:
+                new_frame = self._frame
+            sc_extra = {a: getattr(self, a) for a in self._extra_frameattr_names}
+            sc_extra.update(extra_changes)
+            return self.__class__(Coordinate(frame=new_frame, data=data), **sc_extra)
 
     @property
     def representation_type(self):
@@ -428,10 +485,10 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         equivalent, extra frame attributes are equivalent, and that the
         representation data are exactly equal.
         """
-        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated        
+        # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
         if isinstance(value, BaseCoordinateFrame):
             if value._data is None:
-                raise ValueError("Can only compare SkyCoord to Frame with data")            
+                raise ValueError("Can only compare SkyCoord to Frame with data")
             frame_equiv = (
                 type(self._frame) == type(value)
                 or issubclass(type(value), type(self._frame))
@@ -461,7 +518,9 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
                     " (perhaps compare the frames directly to avoid this exception)"
                 )
 
-        return self._frame.is_equivalent_frame(value._frame) and self._data == value._data
+        return (
+            self._frame.is_equivalent_frame(value._frame) and self._data == value._data
+        )
 
     def _apply(self, method, *args, **kwargs):
         """Create a new instance, applying a method to the underlying data.
@@ -554,7 +613,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
 
         # Make sure that any extra frame attribute names are equivalent.
         for attr in self._extra_frameattr_names | value._extra_frameattr_names:
-            # TODO: APE23: simplify once BaseCoordinateFrame is deprecated            
+            # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
             if not BaseCoordinateFrame._frameattr_equiv(
                 getattr(self, attr), getattr(value, attr)
             ):
@@ -579,8 +638,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
 
         if self._data.shape == ():
             clsnm = type(self._frame).__name__
-            if clsnm.endswith("Frame"):
-                clsnm = clsnm[:-5]
+            clsnm = clsnm.removesuffix("Frame")
             raise TypeError(
                 f"scalar '{clsnm}' frame object does not support item assignment"
             )
@@ -644,6 +702,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         if isinstance(frame, SkyCoord):
             frame = frame.frame  # Change to underlying coord frame instance
 
+        # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         if isinstance(frame, BaseCoordinateFrame):
             new_frame_cls = frame.__class__
             # Get frame attributes, allowing defaults to be overridden by
@@ -680,7 +739,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         # Get the composite transform to the new frame
         trans = frame_transform_graph.get_transform(self.frame.__class__, new_frame_cls)
 
-        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated.
+        # TODO: APE23: simplify when BaseCoordinateFrame is deprecated.
         if (
             trans is not None
             and not trans.transforms
@@ -709,7 +768,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         # which may require one or more of those kwargs.
         generic_frame = GenericFrame(frame_kwargs)
 
-        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated.
+        # TODO: APE23: simplify when BaseCoordinateFrame is deprecated.
         _bcf_cls = next(
             (
                 cls
@@ -720,8 +779,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         )
         if _bcf_cls is not None:
             _frame_attrs = {
-                k: getattr(self._frame, k)
-                for k in type(self._frame).frame_attributes
+                k: getattr(self._frame, k) for k in type(self._frame).frame_attributes
             }
             _from_coord = _bcf_cls(self._data, copy=False, **_frame_attrs)
         else:
@@ -892,15 +950,30 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         data : `~astropy.coordinates.BaseRepresentation`
             The new representation data.
         **kwargs
-            Additional frame attributes to override.
+            Frame attributes to override.
 
         Returns
         -------
         |SkyCoord|
         """
-        extra = {a: getattr(self, a) for a in self._extra_frameattr_names}
-        extra.update(kwargs)
-        return type(self)(Coordinate(frame=self._frame, data=data), **extra)
+        return self.__replace__(data=data, **kwargs)
+
+    def replicate(self, data=None, **frame_attrs):
+        """Return a new |SkyCoord| with optionally substituted data and/or frame attributes."""
+        if data is not None:
+            return self.__replace__(data=data, **frame_attrs)
+        return self.__replace__(**frame_attrs)
+
+    def replicate_without_data(self, **frame_attrs):
+        """|SkyCoord| always requires data; this method is not supported.
+
+        To get the underlying frame without data, use
+        ``sc.frame.replicate_without_data(**frame_attrs)``.
+        """
+        raise NotImplementedError(
+            "SkyCoord always requires data. "
+            "Use sc.frame.replicate_without_data() to get the underlying frame without data."
+        )
 
     def _is_name(self, string):
         """
@@ -923,7 +996,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
             return False
         return True
 
-    def __getattr__(self, attr):
+    def __getattr__(self, attr):  # noqa: PLR0911
         """
         Overrides getattr to return coordinates that this can be transformed
         to, based on the alias attr in the primary transform graph.
@@ -978,11 +1051,16 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
 
             # Registered frame-specific properties
             from astropy.coordinates.coordinate import BaseCoordinate
-            frame_props = BaseCoordinate._get_frame_props(
-                self._frame.name
-            )
+
+            frame_props = BaseCoordinate._get_frame_props(self._frame.name)
             if attr in frame_props:
                 return frame_props[attr](self)
+
+            # TODO: APE23: remove when BaseCoordinateFrame is deprecated
+            try:
+                return getattr(self.frame, attr)
+            except AttributeError:
+                pass
 
         # Call __getattribute__; this will give the correct exception.
         return self.__getattribute__(attr)
@@ -1075,15 +1153,14 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
 
         # Add registered frame-specific properties
         from astropy.coordinates.coordinate import BaseCoordinate
-        dir_values.update(
-            BaseCoordinate._get_frame_props(self._frame.name)
-        )
+
+        dir_values.update(BaseCoordinate._get_frame_props(self._frame.name))
 
         return sorted(dir_values)
 
     def __repr__(self):
         clsnm = self.__class__.__name__
-        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated
+        # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
         bcf_cls = next(
             (
                 cls
@@ -1103,7 +1180,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
 
         return f"<{clsnm} ({coonm}{frameattrs}){data}>"
 
-    def to_table(self):
+    def to_table(self) -> QTable:
         """
         Convert this |SkyCoord| to a |QTable|.
 
@@ -1169,7 +1246,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
             If ``other`` isn't a |SkyCoord| or a subclass of
             `~astropy.coordinates.BaseCoordinateFrame`.
         """
-        # TODO: APE23: simplify once BaseCoordinateFrame is deprecated
+        # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
         if isinstance(other, BaseCoordinateFrame):
             other_frame = other
             for cls in type(other).__mro__:
@@ -1391,6 +1468,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         """
         from .matching import match_coordinates_sky
 
+        # TODO: APE23: simplify when BaseCoordinateFrame deprecated
         if not (
             isinstance(catalogcoord, (SkyCoord, BaseCoordinateFrame))
             and catalogcoord.has_data
@@ -1449,6 +1527,7 @@ class SkyCoord(BaseCoordinate, MaskableShapedLikeNDArray):
         """
         from .matching import match_coordinates_3d
 
+        # TODO: APE23: simplify when BaseCoordinateFrame is deprecated
         if not (
             isinstance(catalogcoord, (SkyCoord, BaseCoordinateFrame))
             and catalogcoord.has_data

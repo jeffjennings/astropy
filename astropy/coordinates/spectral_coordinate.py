@@ -262,6 +262,8 @@ class SpectralCoord(SpectralQuantity):
         if coord is None:
             return
 
+        # TODO: APE23: simplify when BaseCoordinateFrame deprecated: condition
+        # becomes not isinstance(coord, BaseFrame)
         if not issubclass(coord.__class__, BaseCoordinateFrame):
             if isinstance(coord, SkyCoord):
                 # TODO: APE23: update when BaseCoordinateFrame is deprecated
